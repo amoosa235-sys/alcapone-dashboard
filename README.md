@@ -13,6 +13,9 @@ classification and reply drafting.
 Step 1 of 8: the project is scaffolded and the schema is live. Nothing beyond
 the pipeline check is built yet.
 
+Production deploys from `main` on every push, at
+https://alcapone-dashboard.vercel.app.
+
 | Step | What |
 | --- | --- |
 | 1 | Scaffold, repo, Vercel, core tables |
