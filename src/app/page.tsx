@@ -49,13 +49,21 @@ export default async function Home() {
       </section>
 
       <p className="text-sm text-black/60 dark:text-white/60">
-        No channels are connected yet, so there are no tickets to show. Shopify
-        comes next, then Outlook.
+        Tickets arrive from the channels you connect. Nothing is connected out
+        of the box, so start there.
       </p>
 
-      <Link href="/status" className="text-xs underline">
-        Pipeline check
-      </Link>
+      <div className="flex items-center gap-4">
+        <Link
+          href="/channels"
+          className="rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background"
+        >
+          Connect a channel
+        </Link>
+        <Link href="/status" className="text-xs underline">
+          Pipeline check
+        </Link>
+      </div>
     </main>
   );
 }

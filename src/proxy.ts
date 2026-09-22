@@ -11,7 +11,16 @@ import { updateSession } from "@/lib/supabase/proxy";
  * that reads tenant data calls requireMembership() regardless of what happens
  * here.
  */
-const PUBLIC_PATHS = ["/login", "/auth", "/api/health", "/status"];
+// Shopify signs its webhooks rather than carrying a session, so the receiver
+// has to be reachable signed out. It verifies the HMAC itself before reading
+// anything from the request.
+const PUBLIC_PATHS = [
+  "/login",
+  "/auth",
+  "/api/health",
+  "/api/shopify/webhooks",
+  "/status",
+];
 
 function isPublic(pathname: string) {
   return PUBLIC_PATHS.some(
@@ -26,7 +35,10 @@ export async function proxy(request: NextRequest) {
 
   if (!user && !isPublic(pathname)) {
     const loginUrl = new URL("/login", request.url);
-    if (pathname !== "/") {
+    // Sending someone back to an API route after signing in would replay a
+    // request without the query string that made it meaningful, so only
+    // pages are remembered.
+    if (pathname !== "/" && !pathname.startsWith("/api/")) {
       loginUrl.searchParams.set("next", pathname);
     }
     return NextResponse.redirect(loginUrl);

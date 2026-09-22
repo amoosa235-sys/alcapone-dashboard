@@ -10,8 +10,8 @@ classification and reply drafting.
 
 ## Status
 
-Step 2 of 8: you can sign in, and what you see is scoped to your tenant. No
-channels are connected yet, so there are no tickets.
+Step 3 of 8: you can sign in, connect Shopify stores, and Shopify order
+activity arrives as tickets. Outlook is next.
 
 Production deploys from `main` on every push, at
 https://alcapone-dashboard.vercel.app.
@@ -49,6 +49,7 @@ Email and password, through Supabase Auth.
 | `/setup` | First run: name the workspace and become its owner |
 | `/pending` | Signed in, but not a member of any workspace yet |
 | `/` | The dashboard, for a signed-in member |
+| `/channels` | Connect a Shopify store, and see what is connected |
 | `/auth/confirm` | Lands a confirmation or recovery email link |
 
 `src/proxy.ts` refreshes the session cookie on every request and bounces
@@ -72,6 +73,35 @@ Both live in the Supabase dashboard and neither is in code:
   default. `/auth/confirm` handles the token_hash form of the link, which
   means the email template has to be pointed at it; until then, either turn
   confirmation off or click through Supabase's own redirect.
+
+## Shopify
+
+An owner or admin connects a store from `/channels`. That starts OAuth at
+`/api/shopify/install`, which validates the myshopify.com domain, puts a
+single-use nonce in an httpOnly cookie and hands off to Shopify. Shopify comes
+back to `/api/shopify/callback`, which will not write anything until the
+nonce, the shop and Shopify's own HMAC all check out. The access token goes
+into `channel_secrets`, and the store is subscribed to its webhooks.
+
+`/api/shopify/webhooks` is the only route that runs without a session, so the
+`X-Shopify-Hmac-Sha256` signature is verified against the raw body before the
+payload is parsed. Topics:
+
+| Topic | What happens |
+| --- | --- |
+| `orders/create` | A ticket, but only if the order carries a note |
+| `orders/cancelled` | A ticket, with the reason and the items |
+| `refunds/create` | A ticket; the order is fetched for the customer details |
+| `app/uninstalled` | The channel is disabled and its token deleted |
+| `shop/redact` | The channel and its tickets are deleted |
+| `customers/redact` | That customer's details are cleared from their tickets |
+| `customers/data_request` | Acknowledged; fulfilling it is a manual job |
+
+Shopify has no customer inbox to read, so what arrives here is order activity
+rather than conversations. Its value to the inbox is the order number and the
+customer's email and phone on every ticket, which is what step 7 matches an
+email or a WhatsApp message against. Shopify retries anything that is not a
+2xx, so ingestion is idempotent on `(tenant_id, channel_id, external_id)`.
 
 ## Data model
 
@@ -128,6 +158,22 @@ SUPABASE_PROJECT_REF=<project-ref> npm run db:types
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | browser + server | anon-level key; RLS does the protecting |
 | `SUPABASE_SERVICE_ROLE_KEY` | server only | bypasses RLS, for ingestion and secrets |
 | `ANTHROPIC_API_KEY` | server only | classification, extraction, reply drafting |
+| `SHOPIFY_API_KEY` | server only | Shopify Partner app client id |
+| `SHOPIFY_API_SECRET` | server only | signs and verifies everything Shopify sends |
+| `SHOPIFY_APP_URL` | server only | optional; the origin Shopify redirects back to, if the forwarded host is wrong |
 
-All four must be set in Vercel for every environment. `src/lib/env.ts` is the
-only place they are read.
+The first four must be set in Vercel for every environment; `src/lib/env.ts`
+is the only place they are read. The Shopify ones are read lazily in
+`src/lib/shopify/config.ts`, so the rest of the app works without them and
+`/channels` says Shopify is not set up rather than failing.
+
+## Tests
+
+```bash
+npm test
+```
+
+`node --test` over `src/**/*.test.ts`. It covers the two Shopify signature
+checks and the webhook-to-ticket normalisation, none of which touch the
+network — a mistake in either is otherwise invisible until a real install
+quietly fails.

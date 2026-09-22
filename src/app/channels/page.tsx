@@ -1,0 +1,148 @@
+import Link from "next/link";
+
+import { requireMembership } from "@/lib/auth";
+import { isShopifyConfigured, normalizeShopDomain } from "@/lib/shopify/config";
+import { connectErrorMessage } from "@/lib/shopify/errors";
+import { createClient } from "@/lib/supabase/server";
+
+export const dynamic = "force-dynamic";
+export const metadata = { title: "Channels" };
+
+/**
+ * Where a store or mailbox gets connected. Shopify is live; the other two are
+ * listed so the page says what is coming rather than looking broken.
+ */
+export default async function ChannelsPage({
+  searchParams,
+}: PageProps<"/channels">) {
+  const { membership } = await requireMembership();
+  const params = await searchParams;
+  const channels = await listChannels();
+
+  const canManage = membership.role === "owner" || membership.role === "admin";
+  const configured = isShopifyConfigured();
+  // Both of these came in on a query string, so neither is rendered as it
+  // arrived: an error is looked up by code, and a shop name has to be a real
+  // myshopify.com domain to be shown at all.
+  const error = connectErrorMessage(
+    typeof params.error === "string" ? params.error : undefined,
+  );
+  const connected =
+    typeof params.connected === "string"
+      ? normalizeShopDomain(params.connected)
+      : null;
+
+  return (
+    <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col gap-10 px-6 py-16">
+      <header className="flex flex-col gap-2">
+        <Link href="/" className="text-xs underline">
+          Back to the dashboard
+        </Link>
+        <h1 className="text-2xl font-semibold tracking-tight">Channels</h1>
+        <p className="text-sm text-black/60 dark:text-white/60">
+          Every source tickets arrive from.
+        </p>
+      </header>
+
+      {connected ? (
+        <p className="rounded-md border border-green-600/30 bg-green-600/5 px-4 py-3 text-sm">
+          {connected} is connected. New orders, cancellations and refunds will
+          arrive as tickets from now on.
+        </p>
+      ) : null}
+
+      {error ? (
+        <p
+          role="alert"
+          className="rounded-md border border-red-600/30 bg-red-600/5 px-4 py-3 text-sm text-red-700 dark:text-red-400"
+        >
+          {error}
+        </p>
+      ) : null}
+
+      <section className="flex flex-col gap-3">
+        <h2 className="text-sm font-medium">Connected</h2>
+        {channels.length === 0 ? (
+          <p className="text-sm text-black/60 dark:text-white/60">
+            Nothing yet.
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {channels.map((channel) => (
+              <li
+                key={channel.id}
+                className="flex items-center justify-between gap-4 rounded-lg border border-black/10 px-4 py-3 dark:border-white/15"
+              >
+                <div className="flex flex-col">
+                  <span className="text-sm font-medium">
+                    {channel.display_name}
+                  </span>
+                  <span className="text-xs capitalize text-black/50 dark:text-white/50">
+                    {channel.type} &middot; {channel.status}
+                  </span>
+                </div>
+                {channel.last_error ? (
+                  <span className="text-xs text-red-600">
+                    {channel.last_error}
+                  </span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="flex flex-col gap-3">
+        <h2 className="text-sm font-medium">Add a Shopify store</h2>
+
+        {!configured ? (
+          <p className="text-sm text-black/60 dark:text-white/60">
+            Shopify is not set up on this deployment yet. It needs
+            SHOPIFY_API_KEY and SHOPIFY_API_SECRET from a Shopify Partner app.
+          </p>
+        ) : !canManage ? (
+          <p className="text-sm text-black/60 dark:text-white/60">
+            Only an owner or admin can connect a store.
+          </p>
+        ) : (
+          <form action="/api/shopify/install" method="get" className="flex gap-3">
+            <input
+              name="shop"
+              placeholder="acme-supplies.myshopify.com"
+              required
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              className="flex-1 rounded-md border border-black/15 px-3 py-2 text-sm dark:border-white/20"
+            />
+            <button className="rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background">
+              Connect
+            </button>
+          </form>
+        )}
+
+        <p className="text-xs text-black/50 dark:text-white/50">
+          You will be sent to Shopify to approve the permissions, then back
+          here. Connect as many stores as you like.
+        </p>
+      </section>
+
+      <section className="flex flex-col gap-2">
+        <h2 className="text-sm font-medium">Not ready yet</h2>
+        <p className="text-sm text-black/60 dark:text-white/60">
+          Outlook mailboxes are next, then one WhatsApp number.
+        </p>
+      </section>
+    </main>
+  );
+}
+
+/** RLS scopes this to the caller's tenant, so there is no filter here. */
+async function listChannels() {
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("channels")
+    .select("id, type, status, display_name, last_error")
+    .order("created_at", { ascending: true });
+  return data ?? [];
+}
