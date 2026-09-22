@@ -10,8 +10,10 @@ classification and reply drafting.
 
 ## Status
 
-Step 3 of 8: you can sign in, connect Shopify stores, and Shopify order
-activity arrives as tickets. Outlook is next.
+Steps 1 to 5 and 7: you can sign in, connect Shopify stores and Microsoft 365
+mailboxes, and what arrives is classified by Claude and matched against the
+same issue on another channel. The dashboard UI (step 6) and WhatsApp (step 8)
+are still to come.
 
 Production deploys from `main` on every push, at
 https://alcapone-dashboard.vercel.app.
@@ -49,7 +51,7 @@ Email and password, through Supabase Auth.
 | `/setup` | First run: name the workspace and become its owner |
 | `/pending` | Signed in, but not a member of any workspace yet |
 | `/` | The dashboard, for a signed-in member |
-| `/channels` | Add an account, and see what is connected |
+| `/channels` | Add an account, see what is connected, run the job now |
 | `/auth/confirm` | Lands a confirmation or recovery email link |
 
 `src/proxy.ts` refreshes the session cookie on every request and bounces
@@ -131,6 +133,66 @@ customer's email and phone on every ticket, which is what step 7 matches an
 email or a WhatsApp message against. Shopify retries anything that is not a
 2xx, so ingestion is idempotent on `(tenant_id, channel_id, external_id)`.
 
+## Outlook
+
+A mailbox is read with app-only access, so there is no user to send through a
+consent screen: the app registration holds Mail.Read as an application
+permission, and the four values the channels form collects -- mailbox, tenant
+id, client id, client secret -- are exactly what the client credentials flow
+needs.
+
+`syncMailbox` asks Graph for messages newer than the channel's
+`last_synced_at`, turns each into a ticket and moves the cursor only once they
+are in. A failure leaves the cursor where it was, so the next run sees the
+same messages again; the unique index on
+`(tenant_id, channel_id, external_id)` is what keeps that from duplicating
+them.
+
+## Classification
+
+Every new ticket is classified by Claude: one of the four categories, plus the
+customer name, contact number, order number, the items on the order and the
+one item needing attention. It is a single call per ticket using structured
+outputs, so the answer is validated against the schema before any of it is
+written.
+
+Extraction only fills gaps. What a channel knew first-hand -- the email
+address on a Shopify order, the sender of a message -- is never overwritten by
+something read out of message text.
+
+Classifications are kept as history. The live one for a ticket is the row with
+`superseded_at is null`.
+
+## Duplicates
+
+The point of the product: one customer, one problem, two channels. Matching
+runs after classification, because an email has no order number until
+classification finds one in the text.
+
+| Signal | Weight |
+| --- | --- |
+| Same order number | 0.6 |
+| Same email address | 0.25 |
+| Same phone number, last nine digits | 0.2 |
+| Same category | 0.15 |
+| Arrived on two different channels | 0.1 |
+
+A pair needs 0.6 to be suggested, and at least one identifying signal -- order,
+email or phone -- so category alone never links anything. Two messages in one
+email thread, or two events on one Shopify order, are a conversation rather
+than a duplicate and are skipped. Matches older than fourteen days apart are
+not the same incident.
+
+## Jobs
+
+`/api/jobs/run` checks every mailbox and then classifies anything still
+waiting. Vercel Cron calls it hourly with `JOBS_SECRET` as a bearer token; the
+same secret works as a `?key=` for kicking it by hand, and the channels page
+has a button for owners and admins. Everything it does is safe to run twice.
+
+Classification also runs straight after a webhook, inside `after()`, so the
+response goes back to Shopify well inside its five second limit.
+
 ## Data model
 
 Seven tables, all under row level security.
@@ -189,6 +251,7 @@ SUPABASE_PROJECT_REF=<project-ref> npm run db:types
 | `SHOPIFY_API_KEY` | server only | Shopify Partner app client id |
 | `SHOPIFY_API_SECRET` | server only | signs and verifies everything Shopify sends |
 | `SHOPIFY_APP_URL` | server only | optional; the origin Shopify redirects back to, if the forwarded host is wrong |
+| `JOBS_SECRET` | server only | authorises `/api/jobs/run` for Vercel Cron |
 
 The first four must be set in Vercel for every environment; `src/lib/env.ts`
 is the only place they are read. The Shopify ones are read lazily in

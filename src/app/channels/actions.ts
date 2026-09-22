@@ -9,6 +9,7 @@ import {
   readChannelForm,
   splitSecrets,
 } from "@/lib/channels/specs";
+import { classifyOutstanding, syncAllMailboxes } from "@/lib/pipeline/jobs";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export type SaveChannelState = {
@@ -155,5 +156,70 @@ export async function saveChannel(
   return {
     error: null,
     saved: `${spec.name} saved for ${identifier}. It will start pulling messages in once that integration is built.`,
+  };
+}
+
+export type RunJobsState = {
+  error: string | null;
+  summary: string | null;
+};
+
+export const EMPTY_RUN_STATE: RunJobsState = { error: null, summary: null };
+
+/**
+ * Runs the recurring job now rather than waiting for the hour: check every
+ * mailbox, then classify anything still waiting and look for duplicates.
+ *
+ * The same work runs on a schedule and after every webhook. This is here
+ * because waiting an hour to find out whether a mailbox you just connected
+ * actually works is no way to set one up.
+ */
+export async function runJobsNow(
+  _previous: RunJobsState,
+  _formData: FormData,
+): Promise<RunJobsState> {
+  const user = await getUser();
+  if (!user) {
+    return { error: "Sign in again, your session has expired.", summary: null };
+  }
+
+  const membership = await getMembership();
+  if (!membership) {
+    return { error: "You are not a member of a workspace.", summary: null };
+  }
+
+  if (membership.role !== "owner" && membership.role !== "admin") {
+    return { error: "Only an owner or admin can run this.", summary: null };
+  }
+
+  const admin = createAdminClient();
+
+  const mailboxes = await syncAllMailboxes(admin, membership.tenantId);
+  const processed = await classifyOutstanding(admin, membership.tenantId);
+
+  const failures = [
+    ...mailboxes.filter((entry) => entry.error).map((entry) => `${entry.mailbox}: ${entry.error}`),
+    ...processed
+      .filter((entry) => entry.classificationError)
+      .map((entry) => entry.classificationError as string),
+  ];
+
+  const newTickets = mailboxes.reduce((total, entry) => total + entry.created, 0);
+  const classified = processed.filter((entry) => entry.classified).length;
+  const linked = processed.reduce((total, entry) => total + entry.duplicatesLinked, 0);
+
+  const parts = [
+    `${mailboxes.length} mailbox${mailboxes.length === 1 ? "" : "es"} checked`,
+    `${newTickets} new ticket${newTickets === 1 ? "" : "s"}`,
+    `${classified} classified`,
+    `${linked} duplicate link${linked === 1 ? "" : "s"}`,
+  ];
+
+  revalidatePath("/channels");
+  revalidatePath("/");
+
+  return {
+    error: failures.length ? failures.join(" · ") : null,
+    summary: `${parts.join(", ")}.`,
   };
 }

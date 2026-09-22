@@ -8,6 +8,7 @@ import { createClient } from "@/lib/supabase/server";
 import type { Enums } from "@/types/database";
 
 import { AddAccountMenus } from "./add-account-menus";
+import { RunJobsButton } from "./run-jobs";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Channels" };
@@ -71,7 +72,10 @@ export default async function ChannelsPage({
       <AddAccountMenus shopifyReady={shopifyReady} canManage={canManage} />
 
       <section className="flex flex-col gap-3">
-        <h2 className="text-sm font-medium">Connected</h2>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-sm font-medium">Connected</h2>
+          {canManage ? <RunJobsButton /> : null}
+        </div>
         {channels.length === 0 ? (
           <p className="text-sm text-black/60 dark:text-white/60">
             Nothing yet.

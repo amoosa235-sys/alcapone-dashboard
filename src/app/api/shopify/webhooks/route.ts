@@ -1,4 +1,4 @@
-import { NextResponse, type NextRequest } from "next/server";
+import { NextResponse, after, type NextRequest } from "next/server";
 
 import { fetchOrder } from "@/lib/shopify/admin-api";
 import { normalizeShopDomain, shopifyCredentials } from "@/lib/shopify/config";
@@ -8,6 +8,7 @@ import {
   type ShopifyOrder,
   type ShopifyRefund,
 } from "@/lib/shopify/tickets";
+import { processTicket } from "@/lib/pipeline/process";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { Json } from "@/types/database";
 
@@ -144,7 +145,7 @@ export async function POST(request: NextRequest) {
     return new NextResponse("Nothing to do", { status: 200 });
   }
 
-  const { error: insertError } = await admin.from("tickets").upsert(
+  const { data: inserted, error: insertError } = await admin.from("tickets").upsert(
     {
       tenant_id: channel.tenant_id,
       channel_id: channel.id,
@@ -161,12 +162,31 @@ export async function POST(request: NextRequest) {
       raw: payload as Json,
     },
     { onConflict: "tenant_id,channel_id,external_id", ignoreDuplicates: true },
-  );
+  )
+    .select("id")
+    .maybeSingle();
 
   if (insertError) {
     // A 5xx is the honest answer: Shopify will retry and we would rather have
     // the ticket late than not at all.
     return new NextResponse(insertError.message, { status: 500 });
+  }
+
+  if (inserted) {
+    // Classification and duplicate matching run after the response. Shopify
+    // gives a webhook five seconds and retries anything slower, and a retry
+    // here would mean classifying the same ticket twice.
+    const ticketId = inserted.id;
+    const tenantId = channel.tenant_id;
+    after(async () => {
+      const outcome = await processTicket(createAdminClient(), tenantId, ticketId);
+      if (outcome.classificationError) {
+        console.error("shopify: classification failed", {
+          ticketId,
+          error: outcome.classificationError,
+        });
+      }
+    });
   }
 
   return new NextResponse("Received", { status: 200 });

@@ -11,13 +11,15 @@ import { updateSession } from "@/lib/supabase/proxy";
  * that reads tenant data calls requireMembership() regardless of what happens
  * here.
  */
-// Shopify signs its webhooks rather than carrying a session, so the receiver
-// has to be reachable signed out. It verifies the HMAC itself before reading
-// anything from the request.
+// Two routes are reachable signed out, and both authenticate themselves:
+// Shopify signs its webhooks and the receiver checks the HMAC before reading
+// anything, and the job runner takes a shared secret because Vercel Cron has
+// no session to offer.
 const PUBLIC_PATHS = [
   "/login",
   "/auth",
   "/api/health",
+  "/api/jobs",
   "/api/shopify/webhooks",
   "/status",
 ];
