@@ -21,7 +21,7 @@ export function RunJobsButton() {
           {pending ? "Checking…" : "Check mailboxes now"}
         </button>
         <span className="text-xs text-black/45 dark:text-white/45">
-          Runs on its own every hour.
+          Also runs on its own once a day.
         </span>
       </div>
 

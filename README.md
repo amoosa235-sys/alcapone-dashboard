@@ -186,9 +186,21 @@ not the same incident.
 ## Jobs
 
 `/api/jobs/run` checks every mailbox and then classifies anything still
-waiting. Vercel Cron calls it hourly with `JOBS_SECRET` as a bearer token; the
-same secret works as a `?key=` for kicking it by hand, and the channels page
-has a button for owners and admins. Everything it does is safe to run twice.
+waiting. Vercel Cron calls it with `JOBS_SECRET` as a bearer token; the same
+secret works as a `?key=` for kicking it by hand, and the channels page has a
+button for owners and admins. Everything it does is safe to run twice.
+
+**The schedule is daily, and that is a plan limit rather than a choice.**
+Vercel's Hobby plan rejects any cron that would run more than once a day --
+a deployment carrying one is refused outright, with
+`cron_jobs_limits_reached`. On Pro, change the `schedule` in `vercel.json` to
+`0 * * * *` for hourly.
+
+Until then a mailbox is only polled once a day unless somebody presses the
+button, which is no way to run a support inbox. The real fix is not a faster
+cron but Microsoft Graph change notifications, so a message arriving pushes to
+us the way a Shopify webhook does; the daily run would then only renew the
+subscription, which is all it needs to do. That is worth its own step.
 
 Classification also runs straight after a webhook, inside `after()`, so the
 response goes back to Shopify well inside its five second limit.
