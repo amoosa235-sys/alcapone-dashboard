@@ -49,7 +49,7 @@ Email and password, through Supabase Auth.
 | `/setup` | First run: name the workspace and become its owner |
 | `/pending` | Signed in, but not a member of any workspace yet |
 | `/` | The dashboard, for a signed-in member |
-| `/channels` | Connect a Shopify store, and see what is connected |
+| `/channels` | Add an account, and see what is connected |
 | `/auth/confirm` | Lands a confirmation or recovery email link |
 
 `src/proxy.ts` refreshes the session cookie on every request and bounces
@@ -73,6 +73,18 @@ Both live in the Supabase dashboard and neither is in code:
   default. `/auth/confirm` handles the token_hash form of the link, which
   means the email template has to be pointed at it; until then, either turn
   confirmation off or click through Supabase's own redirect.
+
+## Channels
+
+`/channels` has three menus: a Shopify account, an email account and a social
+account. Every account type is listed whether or not it works yet, and one
+that does not says why — Shopify reads "Needs setup" without its keys rather
+than disappearing. They are plain `<details>` elements, so they open before
+the page hydrates and there is no client JavaScript on the route.
+
+Shopify connects today. Microsoft 365 is step 4 and WhatsApp is step 8.
+Instagram and Facebook are listed as not scoped: they were not in the v1
+plan, and nothing is built for them.
 
 ## Shopify
 

@@ -5,12 +5,17 @@ import { isShopifyConfigured, normalizeShopDomain } from "@/lib/shopify/config";
 import { connectErrorMessage } from "@/lib/shopify/errors";
 import { createClient } from "@/lib/supabase/server";
 
+import { AddAccountMenus } from "./add-account-menus";
+
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Channels" };
 
 /**
- * Where a store or mailbox gets connected. Shopify is live; the other two are
- * listed so the page says what is coming rather than looking broken.
+ * Where a store, mailbox or social account gets connected.
+ *
+ * Every account type is listed whether or not it can be used yet, and one
+ * that cannot says why. A menu that hides its own options reads as a page
+ * with nothing on it.
  */
 export default async function ChannelsPage({
   searchParams,
@@ -20,7 +25,8 @@ export default async function ChannelsPage({
   const channels = await listChannels();
 
   const canManage = membership.role === "owner" || membership.role === "admin";
-  const configured = isShopifyConfigured();
+  const shopifyReady = isShopifyConfigured();
+
   // Both of these came in on a query string, so neither is rendered as it
   // arrived: an error is looked up by code, and a shop name has to be a real
   // myshopify.com domain to be shown at all.
@@ -33,20 +39,20 @@ export default async function ChannelsPage({
       : null;
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col gap-10 px-6 py-16">
+    <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col gap-10 px-6 py-16">
       <header className="flex flex-col gap-2">
         <Link href="/" className="text-xs underline">
           Back to the dashboard
         </Link>
         <h1 className="text-2xl font-semibold tracking-tight">Channels</h1>
         <p className="text-sm text-black/60 dark:text-white/60">
-          Every source tickets arrive from.
+          Every account tickets arrive from.
         </p>
       </header>
 
       {connected ? (
         <p className="rounded-md border border-green-600/30 bg-green-600/5 px-4 py-3 text-sm">
-          {connected} is connected. New orders, cancellations and refunds will
+          {connected} is connected. Order notes, cancellations and refunds will
           arrive as tickets from now on.
         </p>
       ) : null}
@@ -59,6 +65,8 @@ export default async function ChannelsPage({
           {error}
         </p>
       ) : null}
+
+      <AddAccountMenus shopifyReady={shopifyReady} canManage={canManage} />
 
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-medium">Connected</h2>
@@ -82,7 +90,7 @@ export default async function ChannelsPage({
                   </span>
                 </div>
                 {channel.last_error ? (
-                  <span className="text-xs text-red-600">
+                  <span className="text-right text-xs text-red-600">
                     {channel.last_error}
                   </span>
                 ) : null}
@@ -90,48 +98,6 @@ export default async function ChannelsPage({
             ))}
           </ul>
         )}
-      </section>
-
-      <section className="flex flex-col gap-3">
-        <h2 className="text-sm font-medium">Add a Shopify store</h2>
-
-        {!configured ? (
-          <p className="text-sm text-black/60 dark:text-white/60">
-            Shopify is not set up on this deployment yet. It needs
-            SHOPIFY_API_KEY and SHOPIFY_API_SECRET from a Shopify Partner app.
-          </p>
-        ) : !canManage ? (
-          <p className="text-sm text-black/60 dark:text-white/60">
-            Only an owner or admin can connect a store.
-          </p>
-        ) : (
-          <form action="/api/shopify/install" method="get" className="flex gap-3">
-            <input
-              name="shop"
-              placeholder="acme-supplies.myshopify.com"
-              required
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-              className="flex-1 rounded-md border border-black/15 px-3 py-2 text-sm dark:border-white/20"
-            />
-            <button className="rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background">
-              Connect
-            </button>
-          </form>
-        )}
-
-        <p className="text-xs text-black/50 dark:text-white/50">
-          You will be sent to Shopify to approve the permissions, then back
-          here. Connect as many stores as you like.
-        </p>
-      </section>
-
-      <section className="flex flex-col gap-2">
-        <h2 className="text-sm font-medium">Not ready yet</h2>
-        <p className="text-sm text-black/60 dark:text-white/60">
-          Outlook mailboxes are next, then one WhatsApp number.
-        </p>
       </section>
     </main>
   );
