@@ -2,15 +2,18 @@ import Link from "next/link";
 
 import { signOut } from "@/app/login/actions";
 import { requireMembership } from "@/lib/auth";
-import { createClient } from "@/lib/supabase/server";
+import { countTicketsByStatus } from "@/lib/tickets/queries";
+import { STATUS_BLURBS, STATUS_LABELS } from "@/lib/tickets/view";
 import { TICKET_STATUSES } from "@/types/database";
 
 export const dynamic = "force-dynamic";
 
 /**
- * The signed-in home. It is deliberately thin: the real ticket list, detail
- * view and reply box are step 6. What it proves today is that a signed-in
- * user reads their own tenant's rows and nobody else's.
+ * The signed-in home: the three piles, and a way into each of them.
+ *
+ * The counts run under the caller's session, so row level security is what
+ * scopes them to their workspace. There is deliberately no tenant_id filter:
+ * if one were needed, the policies would not be doing their job.
  */
 export default async function Home() {
   const { user, membership } = await requireMembership();
@@ -34,31 +37,36 @@ export default async function Home() {
 
       <section className="grid grid-cols-3 gap-4">
         {TICKET_STATUSES.map((status) => (
-          <div
+          <Link
             key={status}
-            className="rounded-lg border border-black/10 p-5 dark:border-white/15"
+            href={`/tickets?status=${status}`}
+            className="rounded-lg border border-black/10 p-5 hover:bg-black/[.03] dark:border-white/15 dark:hover:bg-white/[.04]"
           >
             <div className="text-2xl font-semibold tabular-nums">
               {counts[status]}
             </div>
-            <div className="mt-1 text-sm capitalize text-black/60 dark:text-white/60">
-              {status}
+            <div className="mt-1 text-sm text-black/60 dark:text-white/60">
+              {STATUS_LABELS[status]}
             </div>
-          </div>
+          </Link>
         ))}
       </section>
 
       <p className="text-sm text-black/60 dark:text-white/60">
-        Tickets arrive from the channels you connect. Nothing is connected out
-        of the box, so start there.
+        {counts.unopened > 0
+          ? STATUS_BLURBS.unopened
+          : "Tickets arrive from the channels you connect."}
       </p>
 
       <div className="flex items-center gap-4">
         <Link
-          href="/channels"
+          href="/tickets"
           className="rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background"
         >
-          Connect a channel
+          Open the inbox
+        </Link>
+        <Link href="/channels" className="text-xs underline">
+          Channels
         </Link>
         <Link href="/status" className="text-xs underline">
           Pipeline check
@@ -66,28 +74,4 @@ export default async function Home() {
       </div>
     </main>
   );
-}
-
-/**
- * Counts run under the caller's session, so RLS is what scopes them to the
- * user's tenant. There is deliberately no tenant_id filter here: if one were
- * needed, the policies would not be doing their job.
- */
-async function countTicketsByStatus() {
-  const supabase = await createClient();
-
-  const results = await Promise.all(
-    TICKET_STATUSES.map(async (status) => {
-      const { count } = await supabase
-        .from("tickets")
-        .select("id", { head: true, count: "exact" })
-        .eq("status", status);
-      return [status, count ?? 0] as const;
-    }),
-  );
-
-  return Object.fromEntries(results) as Record<
-    (typeof TICKET_STATUSES)[number],
-    number
-  >;
 }

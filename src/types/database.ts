@@ -309,6 +309,78 @@ export type Database = {
           },
         ];
       };
+      ticket_replies: {
+        Row: {
+          author: Database["public"]["Enums"]["reply_author"];
+          body: string;
+          created_at: string;
+          created_by: string | null;
+          edited_by_agent: boolean;
+          external_message_id: string | null;
+          id: string;
+          last_error: string | null;
+          model: string | null;
+          prompt_version: string | null;
+          sent_at: string | null;
+          sent_by: string | null;
+          status: Database["public"]["Enums"]["reply_status"];
+          tenant_id: string;
+          ticket_id: string;
+          updated_at: string;
+        };
+        Insert: {
+          author?: Database["public"]["Enums"]["reply_author"];
+          body: string;
+          created_at?: string;
+          created_by?: string | null;
+          edited_by_agent?: boolean;
+          external_message_id?: string | null;
+          id?: string;
+          last_error?: string | null;
+          model?: string | null;
+          prompt_version?: string | null;
+          sent_at?: string | null;
+          sent_by?: string | null;
+          status?: Database["public"]["Enums"]["reply_status"];
+          tenant_id: string;
+          ticket_id: string;
+          updated_at?: string;
+        };
+        Update: {
+          author?: Database["public"]["Enums"]["reply_author"];
+          body?: string;
+          created_at?: string;
+          created_by?: string | null;
+          edited_by_agent?: boolean;
+          external_message_id?: string | null;
+          id?: string;
+          last_error?: string | null;
+          model?: string | null;
+          prompt_version?: string | null;
+          sent_at?: string | null;
+          sent_by?: string | null;
+          status?: Database["public"]["Enums"]["reply_status"];
+          tenant_id?: string;
+          ticket_id?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "ticket_replies_tenant_id_fkey";
+            columns: ["tenant_id"];
+            isOneToOne: false;
+            referencedRelation: "tenants";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "ticket_replies_ticket_id_fkey";
+            columns: ["ticket_id"];
+            isOneToOne: false;
+            referencedRelation: "tickets";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       tickets: {
         Row: {
           assigned_to: string | null;
@@ -416,6 +488,8 @@ export type Database = {
         | "instagram"
         | "facebook";
       duplicate_link_status: "suggested" | "confirmed" | "rejected";
+      reply_author: "ai_draft" | "agent";
+      reply_status: "draft" | "sending" | "sent" | "failed";
       tenant_role: "owner" | "admin" | "agent";
       ticket_category: "enquiry" | "return" | "exchange" | "general_complaint";
       ticket_status: "unopened" | "pending" | "closed";
@@ -447,6 +521,13 @@ export const TICKET_CATEGORIES = [
   "return",
   "exchange",
   "general_complaint",
+] as const;
+
+export const REPLY_STATUSES = [
+  "draft",
+  "sending",
+  "sent",
+  "failed",
 ] as const;
 
 export const CHANNEL_TYPES = [
