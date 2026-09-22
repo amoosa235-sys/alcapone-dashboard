@@ -1,9 +1,9 @@
 /**
  * Turning a Microsoft Graph mail message into a ticket.
  *
- * Unlike Shopify, every message here is a customer writing to you, so there
- * is no filtering to do. The work is pulling readable text out of an HTML
- * mail body and finding who sent it.
+ * The work is pulling readable text out of an HTML mail body and finding who
+ * sent it. Automatic mail (out-of-office replies, bounces, newsletters) is
+ * filtered before this, in automated.ts.
  *
  * The order number is deliberately not guessed here. Classification extracts
  * it from the message, and duplicate detection runs after that, so a regular
@@ -24,12 +24,16 @@ export type GraphMessage = {
   body?: { contentType?: string | null; content?: string | null } | null;
   from?: { emailAddress?: GraphEmailAddress | null } | null;
   sender?: { emailAddress?: GraphEmailAddress | null } | null;
+  replyTo?: { emailAddress?: GraphEmailAddress | null }[] | null;
+  internetMessageHeaders?: { name?: string | null; value?: string | null }[] | null;
   receivedDateTime?: string | null;
   createdDateTime?: string | null;
 };
 
 export type NormalizedEmail = {
   externalId: string;
+  /** The address the message came from, before any Reply-To is applied. */
+  fromAddress: string | null;
   externalThreadId: string | null;
   subject: string;
   body: string;
@@ -96,6 +100,17 @@ function address(message: GraphMessage): GraphEmailAddress | null {
   return message.from?.emailAddress ?? message.sender?.emailAddress ?? null;
 }
 
+/**
+ * Who the customer is. A website contact form sends from its own address and
+ * puts the customer in Reply-To, and a reply goes to Reply-To too, so that is
+ * the person when it is set.
+ */
+function customer(message: GraphMessage): GraphEmailAddress | null {
+  const replyTo = message.replyTo?.find((entry) => entry.emailAddress?.address)
+    ?.emailAddress;
+  return replyTo ?? address(message);
+}
+
 export function normalizeGraphMessage(
   message: GraphMessage,
 ): NormalizedEmail | null {
@@ -103,13 +118,14 @@ export function normalizeGraphMessage(
     return null;
   }
 
-  const from = address(message);
+  const from = customer(message);
   const raw = message.body?.content ?? "";
   const isHtml = (message.body?.contentType ?? "").toLowerCase() === "html";
   const body = (isHtml ? htmlToText(raw) : raw.trim()) || (message.bodyPreview ?? "").trim();
 
   return {
     externalId: message.id,
+    fromAddress: address(message)?.address?.trim().toLowerCase() || null,
     externalThreadId: message.conversationId?.trim() || null,
     subject: message.subject?.trim() || "(no subject)",
     body,

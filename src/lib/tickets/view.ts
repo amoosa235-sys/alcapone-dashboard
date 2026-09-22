@@ -13,13 +13,15 @@ export type TicketCategory = Enums<"ticket_category">;
 export const STATUS_LABELS: Record<TicketStatus, string> = {
   unopened: "Unopened",
   pending: "Pending",
+  waiting: "Waiting on customer",
   closed: "Closed",
 };
 
 export const STATUS_BLURBS: Record<TicketStatus, string> = {
-  unopened: "Nobody has picked these up yet.",
-  pending: "Being worked on.",
-  closed: "Done with.",
+  unopened: "Nobody has picked these up yet. Longest waiting first.",
+  pending: "Being worked on, or the customer has written back. Longest waiting first.",
+  waiting: "Answered. These come back to Pending when the customer replies.",
+  closed: "Done with. Most recently closed first.",
 };
 
 export const CATEGORY_LABELS: Record<TicketCategory, string> = {
@@ -59,7 +61,13 @@ export function movesFrom(status: TicketStatus): StatusMove[] {
     case "pending":
       return [
         { to: "closed", label: "Close it" },
+        { to: "waiting", label: "Waiting on the customer" },
         { to: "unopened", label: "Put it back" },
+      ];
+    case "waiting":
+      return [
+        { to: "closed", label: "Close it" },
+        { to: "pending", label: "Back to working on it" },
       ];
     case "closed":
       return [{ to: "pending", label: "Reopen it" }];
@@ -68,6 +76,140 @@ export function movesFrom(status: TicketStatus): StatusMove[] {
 
 export function canMove(from: TicketStatus, to: TicketStatus): boolean {
   return movesFrom(from).some((move) => move.to === to);
+}
+
+/**
+ * A closed conversation the customer writes back on within this many days is
+ * reopened. After that, a reply on an old thread is a new problem and gets a
+ * ticket of its own.
+ */
+export const REOPEN_WINDOW_DAYS = 30;
+
+export type CustomerMessageOutcome =
+  | { kind: "append"; status: TicketStatus; reopened: boolean }
+  | { kind: "new-ticket" };
+
+/**
+ * What a customer writing again does to the ticket their conversation is on.
+ *
+ * The ball comes back to the team: an answered or closed ticket goes back to
+ * pending, so it sits in the pile of things needing a reply. An unopened or
+ * pending ticket is already there and stays put.
+ */
+export function afterCustomerMessage(
+  ticket: { status: TicketStatus; closedAt: string | null },
+  now: Date = new Date(),
+): CustomerMessageOutcome {
+  switch (ticket.status) {
+    case "unopened":
+    case "pending":
+      return { kind: "append", status: ticket.status, reopened: false };
+    case "waiting":
+      return { kind: "append", status: "pending", reopened: false };
+    case "closed": {
+      const closed = ticket.closedAt ? Date.parse(ticket.closedAt) : Number.NaN;
+      const age = (now.getTime() - closed) / 86_400_000;
+      if (Number.isFinite(age) && age > REOPEN_WINDOW_DAYS) {
+        return { kind: "new-ticket" };
+      }
+      return { kind: "append", status: "pending", reopened: true };
+    }
+  }
+}
+
+/**
+ * How each pile is ordered. The two piles that need a reply put whoever has
+ * waited longest at the top; a pile of answered or finished work puts the
+ * most recent first, because that is what somebody goes looking for.
+ */
+export function queueOrder(status: TicketStatus): {
+  column: "last_message_at" | "closed_at" | "updated_at";
+  ascending: boolean;
+} {
+  switch (status) {
+    case "unopened":
+    case "pending":
+      return { column: "last_message_at", ascending: true };
+    case "waiting":
+      return { column: "updated_at", ascending: false };
+    case "closed":
+      return { column: "closed_at", ascending: false };
+  }
+}
+
+/** How many tickets a page of the queue shows. */
+export const PAGE_SIZE = 50;
+
+/**
+ * What an agent typed into the search box, reduced to something safe to put
+ * in a filter: letters, digits and the punctuation that appears in names,
+ * emails, phone numbers and order numbers. PostgREST filter syntax uses
+ * commas, brackets, quotes and asterisks, so none of those survive.
+ */
+export function cleanSearch(input: string | null | undefined): string | null {
+  const cleaned = (input ?? "")
+    .normalize("NFKC")
+    .replace(/[^\p{L}\p{N}@.+\-#' ]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+  return cleaned.length >= 2 ? cleaned : null;
+}
+
+/** What the queue is narrowed to, as read from the address bar. */
+export type TicketFilters = {
+  status: TicketStatus;
+  page: number;
+  q: string | null;
+  category: TicketCategory | null;
+  channelId: string | null;
+  mine: boolean;
+  /** Tickets Claude gave up on, whichever pile they are in. */
+  sorting: "failed" | null;
+  /** Tickets with a reply whose send never confirmed. */
+  stuck: boolean;
+};
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function one(value: string | string[] | undefined): string | null {
+  return typeof value === "string" ? value : Array.isArray(value) ? (value[0] ?? null) : null;
+}
+
+/**
+ * The address bar is typed by anybody, so anything unrecognised falls back
+ * to the default rather than reaching a query.
+ */
+export function parseFilters(params: Record<string, string | string[] | undefined>): TicketFilters {
+  const status = one(params.status);
+  const category = one(params.category);
+  const channel = one(params.channel);
+  const page = Number.parseInt(one(params.page) ?? "1", 10);
+  return {
+    status: status && status in STATUS_LABELS ? (status as TicketStatus) : "unopened",
+    page: Number.isFinite(page) && page >= 1 && page <= 1000 ? page : 1,
+    q: cleanSearch(one(params.q)),
+    category: category && category in CATEGORY_LABELS ? (category as TicketCategory) : null,
+    channelId: channel && UUID.test(channel) ? channel : null,
+    mine: one(params.mine) === "1",
+    sorting: one(params.sorting) === "failed" ? "failed" : null,
+    stuck: one(params.stuck) === "1",
+  };
+}
+
+/** The address for a view of the queue, keeping only what differs from the default. */
+export function listHref(filters: Partial<TicketFilters>): string {
+  const params = new URLSearchParams();
+  if (filters.status && filters.status !== "unopened") params.set("status", filters.status);
+  if (filters.q) params.set("q", filters.q);
+  if (filters.category) params.set("category", filters.category);
+  if (filters.channelId) params.set("channel", filters.channelId);
+  if (filters.mine) params.set("mine", "1");
+  if (filters.sorting) params.set("sorting", filters.sorting);
+  if (filters.stuck) params.set("stuck", "1");
+  if (filters.page && filters.page > 1) params.set("page", String(filters.page));
+  const query = params.toString();
+  return query ? `/tickets?${query}` : "/tickets";
 }
 
 /**

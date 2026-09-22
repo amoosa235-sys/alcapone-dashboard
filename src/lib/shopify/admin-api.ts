@@ -144,3 +144,87 @@ export async function fetchOrder(
     return null;
   }
 }
+
+export type OrdersPage = {
+  orders: ShopifyOrder[];
+  /** Set when Shopify said to slow down; the rest waits for the next run. */
+  rateLimited: boolean;
+  error: string | null;
+};
+
+/**
+ * Orders changed since a moment, following Shopify's page links, for
+ * catching up on webhooks that never arrived. Stops at the page budget, or
+ * as soon as Shopify rate limits the store, and says which.
+ */
+export async function listOrdersUpdatedSince(
+  shop: string,
+  accessToken: string,
+  since: string,
+  maxPages = 4,
+): Promise<OrdersPage> {
+  const first = new URL(
+    `https://${shop}/admin/api/${SHOPIFY_API_VERSION}/orders.json`,
+  );
+  first.searchParams.set("status", "any");
+  first.searchParams.set("updated_at_min", since);
+  first.searchParams.set("limit", "250");
+
+  const orders: ShopifyOrder[] = [];
+  let next: string | null = first.toString();
+
+  for (let page = 0; next && page < maxPages; page += 1) {
+    let response: Response;
+    try {
+      response = await fetch(next, {
+        headers: { "X-Shopify-Access-Token": accessToken },
+      });
+    } catch (error) {
+      return {
+        orders,
+        rateLimited: false,
+        error: error instanceof Error ? error.message : "Could not reach Shopify.",
+      };
+    }
+
+    if (response.status === 429) {
+      return { orders, rateLimited: true, error: null };
+    }
+
+    if (!response.ok) {
+      return {
+        orders,
+        rateLimited: false,
+        error: `Shopify would not list orders (${response.status}).`,
+      };
+    }
+
+    const body = (await response.json()) as { orders?: ShopifyOrder[] };
+    orders.push(...(body.orders ?? []));
+    next = nextPageLink(response.headers.get("link"), shop);
+  }
+
+  return { orders, rateLimited: false, error: null };
+}
+
+/**
+ * The rel="next" URL from Shopify's Link header, and only when it points
+ * back at the same store, since the request carries that store's token.
+ */
+export function nextPageLink(header: string | null, shop: string): string | null {
+  if (!header) {
+    return null;
+  }
+  for (const part of header.split(",")) {
+    const match = part.match(/<([^>]+)>\s*;\s*rel="?next"?/);
+    if (match) {
+      try {
+        const url = new URL(match[1]);
+        return url.hostname === shop && url.protocol === "https:" ? url.toString() : null;
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}

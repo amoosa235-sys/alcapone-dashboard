@@ -8,6 +8,8 @@ import {
   type ShopifyOrder,
   type ShopifyRefund,
 } from "@/lib/shopify/tickets";
+import { ingestMessage, recordOrderEvent } from "@/lib/ingest/messages";
+import { redactCustomer } from "@/lib/ingest/redact";
 import { processTicket } from "@/lib/pipeline/process";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { Json } from "@/types/database";
@@ -112,22 +114,21 @@ export async function POST(request: NextRequest) {
   }
 
   if (topic === "customers/redact") {
-    const email = (payload as { customer?: { email?: string } }).customer?.email;
-    if (email) {
-      await admin
-        .from("tickets")
-        .update({
-          customer_name: null,
-          customer_email: null,
-          customer_phone: null,
-          body: "[redacted at the customer's request]",
-          raw: {},
-        })
-        .eq("tenant_id", channel.tenant_id)
-        .eq("channel_id", channel.id)
-        // % and _ are wildcards to ilike, and an underscore in an address is
-        // ordinary, so escape them rather than redact somebody else's ticket.
-        .ilike("customer_email", email.replace(/[\\%_]/g, "\\$&"));
+    const request = payload as {
+      customer?: { email?: string | null };
+      orders_to_redact?: number[];
+    };
+    const erased = await redactCustomer(admin, {
+      tenantId: channel.tenant_id,
+      email: request.customer?.email ?? null,
+      orderIds: Array.isArray(request.orders_to_redact)
+        ? request.orders_to_redact.filter((id) => typeof id === "number")
+        : [],
+    });
+    if (erased.error) {
+      // Erasure is a legal obligation, so a failure earns a retry rather
+      // than an acknowledgement. Every step is safe to repeat.
+      return new NextResponse("Redaction failed", { status: 500 });
     }
     return new NextResponse("Redacted", { status: 200 });
   }
@@ -139,51 +140,62 @@ export async function POST(request: NextRequest) {
   }
 
   const order = await resolveOrder(admin, channel.id, shop, topic, payload);
-  const ticket = normalizeShopifyEvent(topic, payload, order);
+  const outcome = normalizeShopifyEvent(topic, payload, order);
 
-  if (!ticket) {
+  if (!outcome) {
     return new NextResponse("Nothing to do", { status: 200 });
   }
 
-  const { data: inserted, error: insertError } = await admin.from("tickets").upsert(
-    {
-      tenant_id: channel.tenant_id,
-      channel_id: channel.id,
-      external_id: ticket.externalId,
-      external_thread_id: ticket.externalThreadId,
-      subject: ticket.subject,
-      body: ticket.body,
-      customer_name: ticket.customerName,
-      customer_email: ticket.customerEmail,
-      customer_phone: ticket.customerPhone,
-      order_number: ticket.orderNumber,
-      received_at: ticket.receivedAt,
-      last_message_at: ticket.receivedAt,
+  if (outcome.kind === "event") {
+    // A cancellation or refund is the store's own staff acting. It is kept
+    // as order history beside the customer's tickets, not as a ticket.
+    const recorded = await recordOrderEvent(admin, {
+      tenantId: channel.tenant_id,
+      channelId: channel.id,
+      ...outcome.event,
       raw: payload as Json,
-    },
-    { onConflict: "tenant_id,channel_id,external_id", ignoreDuplicates: true },
-  )
-    .select("id")
-    .maybeSingle();
-
-  if (insertError) {
-    // A 5xx is the honest answer: Shopify will retry and we would rather have
-    // the ticket late than not at all.
-    return new NextResponse(insertError.message, { status: 500 });
+    });
+    if (recorded.error) {
+      return new NextResponse("Could not record the event", { status: 500 });
+    }
+    return new NextResponse("Received", { status: 200 });
   }
 
-  if (inserted) {
+  const ticket = outcome.ticket;
+  const filed = await ingestMessage(admin, {
+    tenantId: channel.tenant_id,
+    channelId: channel.id,
+    externalId: ticket.externalId,
+    threadId: ticket.externalThreadId,
+    subject: ticket.subject,
+    body: ticket.body,
+    senderName: ticket.customerName,
+    senderEmail: ticket.customerEmail,
+    senderPhone: ticket.customerPhone,
+    orderNumber: ticket.orderNumber,
+    receivedAt: ticket.receivedAt,
+    raw: payload as Json,
+  });
+
+  if (filed.outcome === "error") {
+    // A 5xx is the honest answer: Shopify will retry and we would rather have
+    // the ticket late than not at all.
+    return new NextResponse("Could not file the ticket", { status: 500 });
+  }
+
+  if (filed.outcome === "created") {
     // Classification and duplicate matching run after the response. Shopify
     // gives a webhook five seconds and retries anything slower, and a retry
-    // here would mean classifying the same ticket twice.
-    const ticketId = inserted.id;
+    // here would mean classifying the same ticket twice. If this is cut
+    // short, the scheduled job finds the ticket still pending and finishes.
+    const ticketId = filed.ticketId;
     const tenantId = channel.tenant_id;
     after(async () => {
-      const outcome = await processTicket(createAdminClient(), tenantId, ticketId);
-      if (outcome.classificationError) {
+      const result = await processTicket(createAdminClient(), tenantId, ticketId);
+      if (result.classificationError) {
         console.error("shopify: classification failed", {
           ticketId,
-          error: outcome.classificationError,
+          error: result.classificationError,
         });
       }
     });

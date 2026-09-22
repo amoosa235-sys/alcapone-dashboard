@@ -2,7 +2,8 @@
 
 import { useActionState } from "react";
 
-import { EMPTY_TICKET_STATE, moveTicket } from "./actions";
+import { moveTicket } from "./actions";
+import { EMPTY_TICKET_STATE } from "./state";
 import { movesFrom, type TicketStatus } from "@/lib/tickets/view";
 
 /**

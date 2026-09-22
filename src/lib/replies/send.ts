@@ -1,4 +1,9 @@
-import { GRAPH_ROOT, fetchGraphToken } from "@/lib/outlook/graph";
+import { outlookToken } from "@/lib/outlook/credentials";
+import {
+  GRAPH_ROOT,
+  IMMUTABLE_IDS,
+  fetchSentOnConversation,
+} from "@/lib/outlook/graph";
 import type { createAdminClient } from "@/lib/supabase/admin";
 import type { Enums } from "@/types/database";
 
@@ -28,7 +33,8 @@ export type SendOutcome =
 export function sendBlockedOn(ticket: {
   channelType: Enums<"channel_type"> | null;
   channelStatus: Enums<"channel_status"> | null;
-  externalId: string | null;
+  /** The customer's most recent message, which is what a reply answers. */
+  replyToMessageId: string | null;
   customerEmail: string | null;
 }): string | null {
   if (!ticket.channelType) {
@@ -39,7 +45,7 @@ export function sendBlockedOn(ticket: {
     return `Replies cannot go out over ${ticket.channelType} yet. Email is the only channel that can send, so this draft is yours to copy for now.`;
   }
 
-  if (!ticket.externalId) {
+  if (!ticket.replyToMessageId) {
     return "The original email is not on file, so there is no conversation to reply into.";
   }
 
@@ -58,6 +64,10 @@ export function sendBlockedOn(ticket: {
  * body, so there is no message id to record; the sent row carries who sent it
  * and when, which is what the audit actually needs.
  *
+ * The message id is the immutable kind, which survives the email being moved
+ * to another folder, so a customer's message filed away by a mailbox rule can
+ * still be replied to.
+ *
  * This needs Mail.Send as an application permission on the same app
  * registration that already holds Mail.Read. Without it Graph answers 403,
  * and that is surfaced as it comes rather than flattened.
@@ -68,48 +78,21 @@ export async function sendOutlookReply(
   messageId: string,
   body: string,
 ): Promise<SendOutcome> {
-  const mailbox = channel.external_account_id ?? "";
-  const config = (channel.config ?? {}) as Record<string, unknown>;
-  const tenantId = typeof config.tenant_id === "string" ? config.tenant_id : null;
-  const clientId = typeof config.client_id === "string" ? config.client_id : null;
-
-  const { data: secret } = await admin
-    .from("channel_secrets")
-    .select("extra")
-    .eq("channel_id", channel.id)
-    .maybeSingle();
-
-  const extra = (secret?.extra ?? {}) as Record<string, unknown>;
-  const clientSecret =
-    typeof extra.client_secret === "string" ? extra.client_secret : null;
-
-  if (!mailbox || !tenantId || !clientId || !clientSecret) {
-    return {
-      ok: false,
-      error:
-        "That mailbox is missing part of its app registration. Re-enter it on the Channels page.",
-    };
-  }
-
-  let token: string;
-  try {
-    token = await fetchGraphToken({ tenantId, clientId, clientSecret });
-  } catch (error) {
-    return {
-      ok: false,
-      error: error instanceof Error ? error.message : "Microsoft refused the sign-in.",
-    };
+  const access = await outlookToken(admin, channel);
+  if ("error" in access) {
+    return { ok: false, error: access.error };
   }
 
   let response: Response;
   try {
     response = await fetch(
-      `${GRAPH_ROOT}/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(messageId)}/reply`,
+      `${GRAPH_ROOT}/users/${encodeURIComponent(access.mailbox)}/messages/${encodeURIComponent(messageId)}/reply`,
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${access.token}`,
           "Content-Type": "application/json",
+          ...IMMUTABLE_IDS,
         },
         body: JSON.stringify({ comment: body }),
       },
@@ -138,4 +121,38 @@ export async function sendOutlookReply(
   }
 
   return { ok: true, externalMessageId: null };
+}
+
+/**
+ * Whether the mailbox sent anything on this conversation since a moment.
+ *
+ * When a send was cut off before it could report back, nobody knows whether
+ * the customer got it. Sending again risks a second copy; not sending risks
+ * none. The mailbox's Sent Items is the one place that knows, so this looks
+ * there, allowing a minute either side for the clocks involved.
+ */
+export async function sentSince(
+  admin: Admin,
+  channel: { id: string; external_account_id: string | null; config: unknown },
+  conversationId: string,
+  since: string,
+): Promise<{ sent: boolean } | { error: string }> {
+  const access = await outlookToken(admin, channel);
+  if ("error" in access) {
+    return { error: access.error };
+  }
+
+  try {
+    const sent = await fetchSentOnConversation(access.token, access.mailbox, conversationId);
+    const from = Date.parse(since) - 60_000;
+    return {
+      sent: sent.some(
+        (message) => message.sentDateTime && Date.parse(message.sentDateTime) >= from,
+      ),
+    };
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : "Could not read Sent Items.",
+    };
+  }
 }

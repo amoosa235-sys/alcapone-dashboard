@@ -86,3 +86,13 @@ export function callbackUrl(headers: Headers, fallbackOrigin?: string): string {
 export function webhookUrl(headers: Headers, fallbackOrigin?: string): string {
   return `${appOrigin(headers, fallbackOrigin)}/api/shopify/webhooks`;
 }
+
+/**
+ * The webhook address when there is no incoming request to read a host
+ * from, as in the recurring job. The configured app URL wins, as it does for
+ * OAuth, because it is what the Shopify app is registered against.
+ */
+export function webhookUrlFromOrigin(origin: string): string | null {
+  const base = (process.env.SHOPIFY_APP_URL || origin).replace(/\/+$/, "");
+  return base.startsWith("https://") ? `${base}/api/shopify/webhooks` : null;
+}

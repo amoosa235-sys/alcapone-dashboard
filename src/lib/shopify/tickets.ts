@@ -2,10 +2,10 @@
  * Turning a Shopify webhook into a ticket.
  *
  * Shopify has no customer inbox to read, so what arrives here is order
- * activity. Only the events a support agent would have to do something about
- * become tickets; the rest are acknowledged and dropped. Everything that does
- * becomes a ticket carries the order number and the customer's email and
- * phone, which is what step 7 matches an email or a WhatsApp message against.
+ * activity. A note the customer left on an order becomes a ticket.
+ * Cancellations and refunds become order history. Both carry the order number
+ * and the customer's email and phone, which is what an email or a WhatsApp
+ * message is matched against.
  */
 
 export type ShopifyLineItem = {
@@ -36,6 +36,7 @@ export type ShopifyOrder = {
   line_items?: ShopifyLineItem[];
   shipping_address?: { name?: string | null; phone?: string | null } | null;
   billing_address?: { name?: string | null; phone?: string | null } | null;
+  refunds?: ShopifyRefund[];
 };
 
 export type ShopifyRefund = {
@@ -115,79 +116,131 @@ function threadForOrder(orderId: number | undefined): string | null {
   return orderId != null ? `order:${orderId}` : null;
 }
 
+export type NormalizedOrderEvent = {
+  externalId: string;
+  kind: "cancelled" | "refunded";
+  orderNumber: string | null;
+  customerName: string | null;
+  customerEmail: string | null;
+  customerPhone: string | null;
+  summary: string;
+  occurredAt: string;
+};
+
 /**
- * Returns null when the event is real but not something an agent has to act
- * on — an order placed with no message attached, for instance.
+ * What a Shopify event becomes.
+ *
+ * Only an order note is a customer writing in, so only a note becomes a
+ * ticket. Cancellations and refunds are the store's own staff acting, and a
+ * ticket for each would put the team's own work back in front of them as
+ * something to answer. They are kept as order history instead, shown beside
+ * the customer's tickets.
+ */
+export type ShopifyOutcome =
+  | { kind: "ticket"; ticket: NormalizedTicket }
+  | { kind: "event"; event: NormalizedOrderEvent };
+
+function noteTicket(order: ShopifyOrder): NormalizedTicket | null {
+  if (blank(order.note)) {
+    return null;
+  }
+  const number = orderNumber(order);
+  return {
+    externalThreadId: threadForOrder(order.id),
+    customerName: customerName(order),
+    customerEmail: customerEmail(order),
+    customerPhone: customerPhone(order),
+    orderNumber: number,
+    externalId: `orders/create:${order.id}`,
+    subject: `Note on order ${number ?? "an order"}`,
+    body: order.note!.trim(),
+    receivedAt: order.created_at ?? new Date().toISOString(),
+  };
+}
+
+function cancellationEvent(order: ShopifyOrder): NormalizedOrderEvent {
+  const reason = order.cancel_reason?.trim();
+  const items = describeItems(order.line_items);
+  return {
+    externalId: `orders/cancelled:${order.id}`,
+    kind: "cancelled",
+    orderNumber: orderNumber(order),
+    customerName: customerName(order),
+    customerEmail: customerEmail(order),
+    customerPhone: customerPhone(order),
+    summary: [
+      reason ? `Cancelled. Reason given: ${reason}.` : "Cancelled. No reason was recorded.",
+      items,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    occurredAt: order.cancelled_at ?? order.created_at ?? new Date().toISOString(),
+  };
+}
+
+function refundEvent(refund: ShopifyRefund, order: ShopifyOrder | null): NormalizedOrderEvent {
+  const items = refund.refund_line_items
+    ?.map((line) => ({ ...line.line_item, quantity: line.quantity }))
+    .filter(Boolean) as ShopifyLineItem[] | undefined;
+  const note = refund.note?.trim();
+  return {
+    externalId: `refunds/create:${refund.id}`,
+    kind: "refunded",
+    orderNumber: orderNumber(order),
+    customerName: customerName(order),
+    customerEmail: customerEmail(order),
+    customerPhone: customerPhone(order),
+    summary: [
+      note ? `Refunded. Note: ${note}` : "Refunded.",
+      describeItems(items),
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    occurredAt: refund.created_at ?? new Date().toISOString(),
+  };
+}
+
+/**
+ * Returns null when the event is real but not something to keep: an order
+ * placed with no message attached, for instance.
  */
 export function normalizeShopifyEvent(
   topic: string,
   payload: unknown,
   order: ShopifyOrder | null,
-): NormalizedTicket | null {
-  const shared = {
-    externalThreadId: threadForOrder(order?.id),
-    customerName: customerName(order),
-    customerEmail: customerEmail(order),
-    customerPhone: customerPhone(order),
-    orderNumber: orderNumber(order),
-  };
-
-  const reference = shared.orderNumber ?? "an order";
-
+): ShopifyOutcome | null {
   if (topic === "orders/create") {
-    const record = payload as ShopifyOrder;
-    // An order on its own is not a support ticket. A note on it is the
-    // customer having written something, which is.
-    if (blank(record.note)) {
-      return null;
-    }
-    return {
-      ...shared,
-      externalId: `orders/create:${record.id}`,
-      subject: `Note on order ${reference}`,
-      body: record.note!.trim(),
-      receivedAt: record.created_at ?? new Date().toISOString(),
-    };
+    const ticket = noteTicket(payload as ShopifyOrder);
+    return ticket ? { kind: "ticket", ticket } : null;
   }
 
   if (topic === "orders/cancelled") {
-    const record = payload as ShopifyOrder;
-    const reason = record.cancel_reason?.trim();
-    const note = record.note?.trim();
-    return {
-      ...shared,
-      externalId: `orders/cancelled:${record.id}`,
-      subject: `Order ${reference} was cancelled`,
-      body: [
-        reason ? `Reason given: ${reason}.` : "No reason was recorded.",
-        note ? `Order note: ${note}` : "",
-        describeItems(record.line_items),
-      ]
-        .filter(Boolean)
-        .join("\n\n"),
-      receivedAt: record.cancelled_at ?? record.created_at ?? new Date().toISOString(),
-    };
+    return { kind: "event", event: cancellationEvent(payload as ShopifyOrder) };
   }
 
   if (topic === "refunds/create") {
-    const record = payload as ShopifyRefund;
-    const items = record.refund_line_items
-      ?.map((line) => ({ ...line.line_item, quantity: line.quantity }))
-      .filter(Boolean) as ShopifyLineItem[] | undefined;
-    const note = record.note?.trim();
-    return {
-      ...shared,
-      externalId: `refunds/create:${record.id}`,
-      subject: `Refund raised on order ${reference}`,
-      body: [
-        note ? `Refund note: ${note}` : "A refund was raised on this order.",
-        describeItems(items),
-      ]
-        .filter(Boolean)
-        .join("\n\n"),
-      receivedAt: record.created_at ?? new Date().toISOString(),
-    };
+    return { kind: "event", event: refundEvent(payload as ShopifyRefund, order) };
   }
 
   return null;
+}
+
+/**
+ * Everything worth keeping about an order fetched from the Admin API, for
+ * catching up on webhooks that never arrived. The external ids are the same
+ * ones the webhooks produce, so anything already received is skipped.
+ */
+export function outcomesFromOrder(order: ShopifyOrder): ShopifyOutcome[] {
+  const outcomes: ShopifyOutcome[] = [];
+  const ticket = noteTicket(order);
+  if (ticket) {
+    outcomes.push({ kind: "ticket", ticket });
+  }
+  if (order.cancelled_at) {
+    outcomes.push({ kind: "event", event: cancellationEvent(order) });
+  }
+  for (const refund of order.refunds ?? []) {
+    outcomes.push({ kind: "event", event: refundEvent(refund, order) });
+  }
+  return outcomes;
 }

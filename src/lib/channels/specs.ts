@@ -7,10 +7,12 @@ import type { Enums } from "@/types/database";
  * action validates, and where each value is stored. They cannot drift apart,
  * which is the point of keeping them here rather than in the form.
  *
- * `live` is whether the integration behind the channel actually runs yet.
- * Credentials for one that does not are still accepted and stored, because
- * gathering them is work worth doing once; the channel just sits at `pending`
- * until its integration is built, and every form for one says so.
+ * `live` is whether the channel connects through the provider's own approval
+ * screen rather than a credential form. `notice` is what the form says above
+ * its fields; a channel without one has no integration behind it yet, and
+ * its form says that instead. Credentials for one that does not run are
+ * still accepted and stored, because gathering them is work worth doing
+ * once; the channel just sits at `pending` until its integration is built.
  */
 
 export type ChannelField = {
@@ -21,6 +23,8 @@ export type ChannelField = {
   secret?: boolean;
   help?: string;
   optional?: boolean;
+  /** An input type other than text, for a value with a shape of its own. */
+  type?: "date";
 };
 
 export type ChannelSpec = {
@@ -34,6 +38,8 @@ export type ChannelSpec = {
   fields: ChannelField[];
   /** Where in the provider's console these values are found. */
   where: string;
+  /** Set when the integration runs; what someone setting it up must know. */
+  notice?: string;
 };
 
 export const CHANNEL_SPECS: ChannelSpec[] = [
@@ -61,6 +67,8 @@ export const CHANNEL_SPECS: ChannelSpec[] = [
     identifier: "mailbox",
     where:
       "Azure portal, Microsoft Entra ID, App registrations, then your app. The secret is under Certificates & secrets.",
+    notice:
+      "Once saved, this mailbox is read every few minutes. The app registration needs Mail.Read, and Mail.Send to send replies, both as application permissions with admin consent. Application permissions reach every mailbox in your organisation, so limit this app to the support mailbox with an application access policy in Exchange Online.",
     fields: [
       {
         name: "mailbox",
@@ -79,6 +87,14 @@ export const CHANNEL_SPECS: ChannelSpec[] = [
         placeholder: "00000000-0000-0000-0000-000000000000",
       },
       { name: "client_secret", label: "Client secret value", secret: true },
+      {
+        name: "expires_on",
+        label: "Secret expires on",
+        placeholder: "2027-03-31",
+        help: "Shown next to the secret in Azure. The dashboard warns a month before, because mail stops the day it runs out.",
+        optional: true,
+        type: "date",
+      },
     ],
   },
   {
