@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-import { checkHealth } from "@/lib/health";
+import { checkHealth } from "@/lib/health/deploy";
 
 export const metadata = { title: "Pipeline check" };
 export const dynamic = "force-dynamic";

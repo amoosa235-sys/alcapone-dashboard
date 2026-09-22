@@ -2,6 +2,7 @@
 
 import { randomBytes } from "node:crypto";
 import { revalidatePath } from "next/cache";
+import { headers } from "next/headers";
 
 import { getMembership, getUser } from "@/lib/auth";
 import {
@@ -9,7 +10,8 @@ import {
   readChannelForm,
   splitSecrets,
 } from "@/lib/channels/specs";
-import { classifyOutstanding, syncAllMailboxes } from "@/lib/pipeline/jobs";
+import { runTenantJobs } from "@/lib/pipeline/jobs";
+import { appOrigin } from "@/lib/shopify/config";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export type SaveChannelState = {
@@ -79,6 +81,15 @@ export async function saveChannel(
   }
 
   const { values } = parsed;
+
+  if (values.expires_on) {
+    const expires = /^\d{4}-\d{2}-\d{2}$/.test(values.expires_on)
+      ? Date.parse(`${values.expires_on}T00:00:00Z`)
+      : Number.NaN;
+    if (!Number.isFinite(expires)) {
+      return { error: "The expiry date should look like 2027-03-31.", saved: null };
+    }
+  }
 
   // A verify token is ours to pick when it is left blank; it only has to
   // match what gets configured on the provider's side later.
@@ -155,7 +166,10 @@ export async function saveChannel(
 
   return {
     error: null,
-    saved: `${spec.name} saved for ${identifier}. It will start pulling messages in once that integration is built.`,
+    saved:
+      spec.key === "outlook"
+        ? `${spec.name} saved for ${identifier}. Press Check mailboxes now to test it; after that it is checked every few minutes.`
+        : `${spec.name} saved for ${identifier}. It will start pulling messages in once that integration is built.`,
   };
 }
 
@@ -167,11 +181,12 @@ export type RunJobsState = {
 export const EMPTY_RUN_STATE: RunJobsState = { error: null, summary: null };
 
 /**
- * Runs the recurring job now rather than waiting for the hour: check every
- * mailbox, then classify anything still waiting and look for duplicates.
+ * Runs the recurring job now rather than waiting for the schedule: check
+ * every mailbox, catch up on Shopify, then classify anything still waiting
+ * and look for duplicates.
  *
  * The same work runs on a schedule and after every webhook. This is here
- * because waiting an hour to find out whether a mailbox you just connected
+ * because waiting to find out whether a mailbox you just connected
  * actually works is no way to set one up.
  */
 export async function runJobsNow(
@@ -194,26 +209,41 @@ export async function runJobsNow(
 
   const admin = createAdminClient();
 
-  const mailboxes = await syncAllMailboxes(admin, membership.tenantId);
-  const processed = await classifyOutstanding(admin, membership.tenantId);
+  // A server action has the same time limit as the page it runs from, so it
+  // stops starting new work well inside it. Anything left is picked up by
+  // the next scheduled run.
+  const report = await runTenantJobs(admin, membership.tenantId, {
+    origin: appOrigin(await headers()),
+    deadline: Date.now() + 45_000,
+  });
+  const { mailboxes, stores, classified: processed } = report;
 
   const failures = [
     ...mailboxes.filter((entry) => entry.error).map((entry) => `${entry.mailbox}: ${entry.error}`),
+    ...stores.filter((entry) => entry.error).map((entry) => `${entry.shop}: ${entry.error}`),
     ...processed
       .filter((entry) => entry.classificationError)
       .map((entry) => entry.classificationError as string),
   ];
 
   const newTickets = mailboxes.reduce((total, entry) => total + entry.created, 0);
+  const replies = mailboxes.reduce((total, entry) => total + entry.appended, 0);
+  const skipped = mailboxes.reduce((total, entry) => total + entry.skipped, 0);
+  const caughtUp = mailboxes.every((entry) => entry.caughtUp || entry.error);
   const classified = processed.filter((entry) => entry.classified).length;
   const linked = processed.reduce((total, entry) => total + entry.duplicatesLinked, 0);
 
   const parts = [
     `${mailboxes.length} mailbox${mailboxes.length === 1 ? "" : "es"} checked`,
     `${newTickets} new ticket${newTickets === 1 ? "" : "s"}`,
+    `${replies} repl${replies === 1 ? "y" : "ies"} added to existing tickets`,
+    `${skipped} automatic message${skipped === 1 ? "" : "s"} skipped`,
     `${classified} classified`,
     `${linked} duplicate link${linked === 1 ? "" : "s"}`,
   ];
+  if (!caughtUp) {
+    parts.push("more mail is still waiting and will come in on the next run");
+  }
 
   revalidatePath("/channels");
   revalidatePath("/");

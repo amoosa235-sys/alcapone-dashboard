@@ -115,3 +115,42 @@ test("an issue from months ago is not the same issue", () => {
 test("a ticket is never a duplicate of itself", () => {
   assert.deepEqual(findDuplicates(SHOPIFY, [SHOPIFY]), []);
 });
+
+test("the same order number in two different stores is two orders", () => {
+  const otherStore: DuplicateCandidate = {
+    ...SHOPIFY,
+    id: "ticket-other-store",
+    channelId: "channel-shopify-2",
+    externalThreadId: "order:5555",
+    customerEmail: "someone-else@example.com",
+    customerPhone: null,
+  };
+  assert.deepEqual(findDuplicates(otherStore, [SHOPIFY], { shopifyStores: 2 }), []);
+});
+
+test("with several stores, an order number from an email needs the customer to match too", () => {
+  const stranger: DuplicateCandidate = {
+    ...EMAIL,
+    id: "ticket-stranger",
+    externalThreadId: "AAQkSTRANGER",
+    customerEmail: "stranger@example.com",
+  };
+  assert.deepEqual(findDuplicates(stranger, [SHOPIFY], { shopifyStores: 2 }), []);
+
+  // The same customer writing about the same number is believed.
+  const [link] = findDuplicates(EMAIL, [SHOPIFY], { shopifyStores: 2 });
+  assert.ok(link, "the matching customer should still link");
+  assert.match(link.matchReason, /same email address/);
+});
+
+test("with one store, an order number alone is enough", () => {
+  const stranger: DuplicateCandidate = {
+    ...EMAIL,
+    id: "ticket-stranger",
+    externalThreadId: "AAQkSTRANGER",
+    customerEmail: "stranger@example.com",
+  };
+  const [link] = findDuplicates(stranger, [SHOPIFY], { shopifyStores: 1 });
+  assert.ok(link);
+  assert.match(link.matchReason, /same order/);
+});

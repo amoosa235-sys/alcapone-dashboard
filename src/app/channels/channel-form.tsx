@@ -11,7 +11,7 @@ import { EMPTY_SAVE_STATE, saveChannel } from "./actions";
  *
  * Fields come from the spec, so this renders whatever a channel asks for
  * without knowing anything about it. For a channel whose integration is not
- * built, the notice at the top is deliberately the first thing read: these
+ * built, the warning at the top is deliberately the first thing read: these
  * are real credentials being stored against something that cannot use them
  * yet, and nobody should walk away thinking the channel is live.
  */
@@ -25,12 +25,18 @@ export function ChannelForm({ spec }: { spec: ChannelSpec }) {
     <form action={formAction} className="flex flex-col gap-3">
       <input type="hidden" name="type" value={spec.key} />
 
-      <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed">
-        <strong className="font-semibold">Saved, not connected.</strong>{" "}
-        {spec.name} has no integration behind it yet. What you enter here is
-        stored and waiting, and no messages will arrive from it until that part
-        is built.
-      </p>
+      {spec.notice ? (
+        <p className="rounded-md border border-black/15 px-3 py-2 text-xs leading-relaxed dark:border-white/20">
+          {spec.notice}
+        </p>
+      ) : (
+        <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed">
+          <strong className="font-semibold">Saved, not connected.</strong>{" "}
+          {spec.name} has no integration behind it yet. What you enter here is
+          stored and waiting, and no messages will arrive from it until that part
+          is built.
+        </p>
+      )}
 
       {spec.fields.map((field) => (
         <label key={field.name} className="flex flex-col gap-1 text-xs">
@@ -45,7 +51,7 @@ export function ChannelForm({ spec }: { spec: ChannelSpec }) {
           </span>
           <input
             name={field.name}
-            type={field.secret ? "password" : "text"}
+            type={field.secret ? "password" : (field.type ?? "text")}
             placeholder={field.placeholder}
             autoComplete={field.secret ? "new-password" : "off"}
             autoCapitalize="none"

@@ -4,8 +4,13 @@ import { requireMembership } from "@/lib/auth";
 import { isShopifyConfigured, normalizeShopDomain } from "@/lib/shopify/config";
 import { channelSpec } from "@/lib/channels/specs";
 import { connectErrorMessage } from "@/lib/shopify/errors";
+import { loadWorkspaceHealth } from "@/lib/health/load";
+import { secretExpiry } from "@/lib/health/workspace";
 import { createClient } from "@/lib/supabase/server";
+import { timeAgo } from "@/lib/tickets/view";
 import type { Enums } from "@/types/database";
+
+import { HealthBanner } from "../health-banner";
 
 import { AddAccountMenus } from "./add-account-menus";
 import { RunJobsButton } from "./run-jobs";
@@ -25,7 +30,7 @@ export default async function ChannelsPage({
 }: PageProps<"/channels">) {
   const { membership } = await requireMembership();
   const params = await searchParams;
-  const channels = await listChannels();
+  const [channels, health] = await Promise.all([listChannels(), loadWorkspaceHealth()]);
 
   const canManage = membership.role === "owner" || membership.role === "admin";
   const shopifyReady = isShopifyConfigured();
@@ -55,8 +60,9 @@ export default async function ChannelsPage({
 
       {connected ? (
         <p className="rounded-md border border-green-600/30 bg-green-600/5 px-4 py-3 text-sm">
-          {connected} is connected. Order notes, cancellations and refunds will
-          arrive as tickets from now on.
+          {connected} is connected. Notes customers leave on orders arrive as
+          tickets from now on, and cancellations and refunds show as order
+          history beside that customer&rsquo;s tickets.
         </p>
       ) : null}
 
@@ -69,6 +75,8 @@ export default async function ChannelsPage({
         </p>
       ) : null}
 
+      <HealthBanner warnings={health.warnings} />
+
       <AddAccountMenus shopifyReady={shopifyReady} canManage={canManage} />
 
       <section className="flex flex-col gap-3">
@@ -76,6 +84,11 @@ export default async function ChannelsPage({
           <h2 className="text-sm font-medium">Connected</h2>
           {canManage ? <RunJobsButton /> : null}
         </div>
+        <p className="text-xs text-black/50 dark:text-white/50">
+          {health.lastJobRunAt
+            ? `Mailboxes and stores were last checked automatically ${timeAgo(health.lastJobRunAt)}. This runs every few minutes.`
+            : "The automatic check has not run yet."}
+        </p>
         {channels.length === 0 ? (
           <p className="text-sm text-black/60 dark:text-white/60">
             Nothing yet.
@@ -93,6 +106,7 @@ export default async function ChannelsPage({
                   </span>
                   <span className="text-xs text-black/50 dark:text-white/50">
                     {channelSpec(channel.type)?.name ?? channel.type}
+                    {describeChecks(channel.config)}
                   </span>
                 </div>
                 <span className="shrink-0 text-right text-xs text-black/50 dark:text-white/50">
@@ -128,12 +142,32 @@ function describeStatus(status: Enums<"channel_status">): string {
   }
 }
 
+/** When a channel was last looked at, and when its secret runs out. */
+function describeChecks(config: unknown): string {
+  const values = (config ?? {}) as Record<string, unknown>;
+  const parts: string[] = [];
+  const checked =
+    typeof values.last_checked_at === "string"
+      ? values.last_checked_at
+      : typeof values.last_reconciled_at === "string"
+        ? values.last_reconciled_at
+        : null;
+  if (checked) {
+    parts.push(`checked ${timeAgo(checked)}`);
+  }
+  const expires = secretExpiry(config);
+  if (expires) {
+    parts.push(`secret expires ${expires.slice(0, 10)}`);
+  }
+  return parts.length ? ` · ${parts.join(" · ")}` : "";
+}
+
 /** RLS scopes this to the caller's tenant, so there is no filter here. */
 async function listChannels() {
   const supabase = await createClient();
   const { data } = await supabase
     .from("channels")
-    .select("id, type, status, display_name, last_error")
+    .select("id, type, status, display_name, last_error, config")
     .order("created_at", { ascending: true });
   return data ?? [];
 }

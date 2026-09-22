@@ -10,10 +10,10 @@ classification and reply drafting.
 
 ## Status
 
-Steps 1 to 5 and 7: you can sign in, connect Shopify stores and Microsoft 365
-mailboxes, and what arrives is classified by Claude and matched against the
-same issue on another channel. The dashboard UI (step 6) and WhatsApp (step 8)
-are still to come.
+Steps 1 to 7: you can sign in, connect Shopify stores and Microsoft 365
+mailboxes, and what arrives is classified by Claude, matched against the same
+issue on another channel, and answered from the inbox. WhatsApp (step 8) is
+still to come.
 
 Production deploys from `main` on every push, at
 https://alcapone-dashboard.vercel.app.
@@ -120,11 +120,11 @@ payload is parsed. Topics:
 | Topic | What happens |
 | --- | --- |
 | `orders/create` | A ticket, but only if the order carries a note |
-| `orders/cancelled` | A ticket, with the reason and the items |
-| `refunds/create` | A ticket; the order is fetched for the customer details |
+| `orders/cancelled` | Order history, with the reason and the items |
+| `refunds/create` | Order history; the order is fetched for the customer details |
 | `app/uninstalled` | The channel is disabled and its token deleted |
-| `shop/redact` | The channel and its tickets are deleted |
-| `customers/redact` | That customer's details are cleared from their tickets |
+| `shop/redact` | The channel, its tickets and its order history are deleted |
+| `customers/redact` | That customer is erased across the workspace: tickets, messages, what Claude read out of them, replies and order history |
 | `customers/data_request` | Acknowledged; fulfilling it is a manual job |
 
 Shopify has no customer inbox to read, so what arrives here is order activity
@@ -132,6 +132,12 @@ rather than conversations. Its value to the inbox is the order number and the
 customer's email and phone on every ticket, which is what step 7 matches an
 email or a WhatsApp message against. Shopify retries anything that is not a
 2xx, so ingestion is idempotent on `(tenant_id, channel_id, external_id)`.
+
+Cancellations and refunds are the store's own staff acting, so they are not
+tickets: they are kept in `order_events` and shown beside that customer's
+tickets. Webhooks can be lost, so every six hours the scheduled job lists the
+orders updated since its last pass, files anything missing under the same
+external ids the webhooks use, and re-registers the webhooks.
 
 ## Outlook
 
@@ -141,12 +147,50 @@ permission, and the four values the channels form collects -- mailbox, tenant
 id, client id, client secret -- are exactly what the client credentials flow
 needs.
 
-`syncMailbox` asks Graph for messages newer than the channel's
-`last_synced_at`, turns each into a ticket and moves the cursor only once they
-are in. A failure leaves the cursor where it was, so the next run sees the
-same messages again; the unique index on
-`(tenant_id, channel_id, external_id)` is what keeps that from duplicating
-them.
+To send replies it also needs Mail.Send. Application permissions reach every
+mailbox in the organisation, so limit the app to the support mailbox with an
+application access policy in Exchange Online. The form takes the secret's
+expiry date, and the dashboard warns a month before it runs out.
+
+`syncMailbox` pages through Graph for messages received since the channel's
+`last_synced_at`, a page at a time, and moves the cursor after each page is
+in. A failure leaves the cursor where it was, so the next run sees the same
+messages again; the unique index on `(tenant_id, channel_id, external_id)` is
+what keeps that from duplicating them. The first check only looks back 24
+hours before the mailbox was connected, rather than importing the whole inbox.
+Message ids are Graph's immutable kind, so a message a mailbox rule moves can
+still be replied to.
+
+Out-of-office replies, bounces, newsletters and no-reply notifications are
+recognised from their headers and skipped. A contact form that sends from a
+no-reply address with the customer in Reply-To is kept, with the customer
+taken from Reply-To.
+
+## Tickets
+
+A ticket is a conversation. A customer writing again on the same email thread
+or Shopify order is added to the ticket they already have (`ticket_messages`),
+and the ticket goes back to Pending. A thread closed more than 30 days ago
+starts a new ticket instead.
+
+| Pile | Means | Order |
+| --- | --- | --- |
+| Unopened | Nobody has picked it up | Longest waiting first |
+| Pending | Being worked on, or the customer wrote back | Longest waiting first |
+| Waiting on customer | Answered; comes back when they reply | Most recent first |
+| Closed | Done | Most recently closed first |
+
+Sending a reply moves a ticket to Waiting and opens the next one in the pile.
+The queue is paged, searchable across every pile, and filters by kind,
+channel and assignee. Tickets can be assigned, merged, closed in bulk, and
+answered with saved replies that fill in the customer's name and order.
+
+Replies are drafted by Claude and sent by a person, never the other way round.
+The database enforces it: a member can only create drafts, and only the
+server's send path can mark a reply sent. A send that is cut off part way is
+shown on the ticket as unconfirmed, with a button that looks in the mailbox's
+Sent Items to settle whether it went.
+
 
 ## Classification
 
@@ -163,6 +207,16 @@ something read out of message text.
 Classifications are kept as history. The live one for a ticket is the row with
 `superseded_at is null`.
 
+A failed classification is retried by the scheduled job with a growing wait
+(2, 4, 8, 16 minutes) and gives up after five attempts, or at once when the
+failure is not worth retrying. A ticket Claude gave up on says so and has a
+button to try again.
+
+An agent can correct what Claude read out of a ticket. The correction is kept
+as a classification of its own (`source = 'agent'`), duplicate matching runs
+again on the corrected values, and the home page shows, per prompt version,
+how often the team had to correct Claude.
+
 ## Duplicates
 
 The point of the product: one customer, one problem, two channels. Matching
@@ -178,36 +232,42 @@ classification finds one in the text.
 | Arrived on two different channels | 0.1 |
 
 A pair needs 0.6 to be suggested, and at least one identifying signal -- order,
-email or phone -- so category alone never links anything. Two messages in one
+email or phone -- so category alone never links anything. Two different order
+numbers are two different problems however much else matches. Two Shopify
+stores never share an order, and with more than one store an order number
+read out of an email only counts when the email or phone matches too.
+Candidates are read by indexed match keys (`order_key`, `email_key`,
+`phone_key`) rather than by scanning the last fortnight of tickets.
+
+An agent can confirm a suggestion by merging the two tickets, or reject it so
+it is not suggested again. Two messages in one
 email thread, or two events on one Shopify order, are a conversation rather
 than a duplicate and are skipped. Matches older than fourteen days apart are
 not the same incident.
 
 ## Jobs
 
-`/api/jobs/run` checks every mailbox and then classifies anything still
-waiting. Vercel Cron calls it with `JOBS_SECRET` as a bearer token; the same
-secret works as a `?key=` for kicking it by hand, and the channels page has a
-button for owners and admins. Everything it does is safe to run twice.
+`/api/jobs/run` does the recurring work for every workspace: check each
+mailbox, catch up on Shopify every six hours, then classify anything waiting
+whose retry time has come. Each workspace gets an even share of the time
+limit, and anything unfinished is picked up by the next run. Everything it
+does is safe to run twice. Each run records a heartbeat, and the dashboard
+warns when the heartbeat goes quiet.
 
-**The schedule is daily, and that is a plan limit rather than a choice.**
-Vercel's Hobby plan rejects any cron that would run more than once a day --
-a deployment carrying one is refused outright, with
-`cron_jobs_limits_reached`. On Pro, change the `schedule` in `vercel.json` to
-`0 * * * *` for hourly.
-
-Until then a mailbox is only polled once a day unless somebody presses the
-button, which is no way to run a support inbox. The real fix is not a faster
-cron but Microsoft Graph change notifications, so a message arriving pushes to
-us the way a Shopify webhook does; the daily run would then only renew the
-subscription, which is all it needs to do. That is worth its own step.
+It runs every five minutes from Supabase's own scheduler (`pg_cron` calling
+the route with `pg_net`), because Vercel's Hobby plan only allows daily crons.
+The bearer token it sends is generated inside the database and kept in
+Vault, so nobody has to copy a secret anywhere; the route reads it back
+through `jobs_runner_token()`, which only the service role can call.
+`JOBS_SECRET` and Vercel's `CRON_SECRET` are also accepted, in the
+`Authorization` header only. The channels page has a button to run it now.
 
 Classification also runs straight after a webhook, inside `after()`, so the
 response goes back to Shopify well inside its five second limit.
 
 ## Data model
 
-Seven tables, all under row level security.
+Every table is under row level security.
 
 - `tenants` — one paying company. v1 runs a single tenant, but every row in
   every other table carries `tenant_id` so v2 billing needs no migration.
@@ -219,8 +279,16 @@ Seven tables, all under row level security.
 - `channel_secrets` — OAuth tokens and webhook signing secrets, split off so no
   agent-facing policy can reach them. RLS is on with no policies at all and the
   table grants are revoked, so only the service role can read it.
-- `tickets` — every inbound message, normalized across channels, with the
-  provider payload kept in `raw` for replay.
+- `tickets` — one conversation, normalized across channels, with its first
+  message's provider payload kept in `raw` for replay, and generated match
+  keys for duplicate detection.
+- `ticket_messages` — every customer message on a ticket, keyed on the
+  provider's message id.
+- `ticket_replies` — drafts and sent replies. Members write drafts; only the
+  server marks one sent.
+- `saved_replies` — a workspace's reusable answers.
+- `order_events` — Shopify cancellations and refunds.
+- `job_heartbeats` — when the scheduled job last ran for each workspace.
 - `ticket_classifications` — Claude's verdict: category, the extracted customer
   and order details, and which item needs attention. Rows are kept as history;
   the live one for a ticket is the row where `superseded_at is null`.
@@ -263,7 +331,7 @@ SUPABASE_PROJECT_REF=<project-ref> npm run db:types
 | `SHOPIFY_API_KEY` | server only | Shopify Partner app client id |
 | `SHOPIFY_API_SECRET` | server only | signs and verifies everything Shopify sends |
 | `SHOPIFY_APP_URL` | server only | optional; the origin Shopify redirects back to, if the forwarded host is wrong |
-| `JOBS_SECRET` | server only | authorises `/api/jobs/run` for Vercel Cron |
+| `JOBS_SECRET` | server only | optional; authorises calling `/api/jobs/run` by hand |
 
 The first four must be set in Vercel for every environment; `src/lib/env.ts`
 is the only place they are read. The Shopify ones are read lazily in
@@ -276,7 +344,8 @@ is the only place they are read. The Shopify ones are read lazily in
 npm test
 ```
 
-`node --test` over `src/**/*.test.ts`. It covers the two Shopify signature
-checks and the webhook-to-ticket normalisation, none of which touch the
-network — a mistake in either is otherwise invisible until a real install
-quietly fails.
+`node --test` over `src/**/*.test.ts`. It covers the Shopify signature checks
+and normalisation, telling automatic mail from a person, the duplicate rules,
+the ticket piles and queue order, classification retries, saved reply
+placeholders, unconfirmed sends and the workspace health warnings. None of it
+touches the network.

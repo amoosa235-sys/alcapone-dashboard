@@ -22,16 +22,33 @@ export type DraftInput = {
   workspaceName: string;
   channel: string;
   subject: string | null;
-  body: string | null;
+  /**
+   * The whole conversation, oldest first: what the customer wrote and what
+   * was sent back. The last customer message is what the draft answers.
+   */
+  conversation: ConversationEntry[];
   customerName: string | null;
   orderNumber: string | null;
   category: string | null;
   summary: string | null;
   itemNeedingAttention: string | null;
   orderedItems: { name: string; quantity: number | null }[];
-  /** Replies already sent on this ticket, oldest first. */
-  alreadySent: string[];
 };
+
+export type ConversationEntry = { from: "customer" | "us"; at: string; text: string };
+
+/**
+ * Long conversations keep their start and their end. The first message says
+ * what the problem is; the last few say where it has got to.
+ */
+const MAX_ENTRIES = 12;
+
+export function trimConversation(entries: ConversationEntry[]): ConversationEntry[] {
+  if (entries.length <= MAX_ENTRIES) {
+    return entries;
+  }
+  return [entries[0], ...entries.slice(entries.length - (MAX_ENTRIES - 1))];
+}
 
 export type DraftResult =
   | { ok: true; draft: Draft; model: string; promptVersion: string }
@@ -60,20 +77,22 @@ function describe(input: DraftInput): string {
     .map(([label, value]) => `${label}: ${value}`)
     .join("\n");
 
-  const history = input.alreadySent.length
-    ? `\nAlready sent to this customer on this ticket, oldest first:\n${input.alreadySent
-        .map((reply, index) => `--- reply ${index + 1} ---\n${reply}`)
-        .join("\n")}\n`
-    : "";
+  const entries = trimConversation(input.conversation);
+  const skipped = input.conversation.length - entries.length;
+  const conversation = entries
+    .map((entry, index) => {
+      const who = entry.from === "customer" ? "The customer wrote" : "We replied";
+      const gap =
+        skipped > 0 && index === 1 ? `(${skipped} earlier messages left out)\n\n` : "";
+      return `${gap}--- ${who} (${entry.at}) ---\n${entry.text || "(empty)"}`;
+    })
+    .join("\n\n");
 
   return [
     `What is known:\n${known}`,
-    history,
     `\nSubject: ${input.subject ?? "(none)"}`,
-    `\nTheir message:\n${input.body ?? "(empty)"}`,
-  ]
-    .filter(Boolean)
-    .join("\n");
+    `\nThe conversation so far, oldest first:\n\n${conversation || "(no messages)"}`,
+  ].join("\n");
 }
 
 export async function draftReply(

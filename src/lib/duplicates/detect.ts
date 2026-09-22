@@ -35,6 +35,17 @@ export const MATCH_WINDOW_DAYS = 14;
 /** Below this, a pair is a coincidence rather than a duplicate. */
 export const MATCH_THRESHOLD = 0.6;
 
+/**
+ * What the matcher needs to know about the workspace rather than the pair.
+ *
+ * Shopify numbers orders per store, and every store starts at #1001, so an
+ * order number only identifies an order once you know which store it is
+ * from. With one store connected that is never in doubt.
+ */
+export type MatchContext = {
+  shopifyStores: number;
+};
+
 /** `#1001`, `1001` and ` #1001 ` are one order. */
 export function normalizeOrderNumber(value: string | null): string | null {
   if (!value) {
@@ -71,11 +82,44 @@ function daysApart(a: string, b: string): number {
 
 type Signal = { weight: number; reason: string };
 
-function signals(a: DuplicateCandidate, b: DuplicateCandidate): Signal[] {
+/**
+ * Whether two order numbers can be the same order at all.
+ *
+ * Two Shopify tickets from different stores never share an order, whatever
+ * their numbers say. A number read out of an email could belong to any
+ * store, so with more than one store it is only trusted when something else
+ * about the customer agrees.
+ */
+function orderScope(
+  a: DuplicateCandidate,
+  b: DuplicateCandidate,
+  context: MatchContext,
+): "same-store" | "different-stores" | "unknown-store" {
+  const aShop = a.channelType === "shopify";
+  const bShop = b.channelType === "shopify";
+  if (aShop && bShop) {
+    return a.channelId === b.channelId ? "same-store" : "different-stores";
+  }
+  if (context.shopifyStores <= 1) {
+    return "same-store";
+  }
+  return "unknown-store";
+}
+
+function signals(
+  a: DuplicateCandidate,
+  b: DuplicateCandidate,
+  context: MatchContext,
+): Signal[] {
   const found: Signal[] = [];
 
   const orderA = normalizeOrderNumber(a.orderNumber);
-  if (orderA && orderA === normalizeOrderNumber(b.orderNumber)) {
+  const scope = orderScope(a, b, context);
+  if (
+    orderA &&
+    orderA === normalizeOrderNumber(b.orderNumber) &&
+    scope !== "different-stores"
+  ) {
     // The normalized form, not the raw one: Shopify writes #1001 and an
     // email says 1001, and the reason is stored against the pair, so it has
     // to read the same whichever side found the match.
@@ -114,6 +158,7 @@ function signals(a: DuplicateCandidate, b: DuplicateCandidate): Signal[] {
 export function findDuplicates(
   subject: DuplicateCandidate,
   candidates: DuplicateCandidate[],
+  context: MatchContext = { shopifyStores: 1 },
 ): DuplicateLink[] {
   const links: DuplicateLink[] = [];
 
@@ -136,12 +181,28 @@ export function findDuplicates(
       continue;
     }
 
-    const matched = signals(subject, other);
+    // Two different orders are two different problems, however much else
+    // about the customer is the same. A repeat customer writing about each
+    // of their orders is not writing twice about one.
+    const orderA = normalizeOrderNumber(subject.orderNumber);
+    const orderB = normalizeOrderNumber(other.orderNumber);
+    if (orderA && orderB && orderA !== orderB) {
+      continue;
+    }
+
+    const matched = signals(subject, other, context);
     // Matching on category alone would link every complaint to every other.
-    const identifying = matched.some((signal) =>
-      /same order|same email|same phone/.test(signal.reason),
+    const byOrder = matched.some((signal) => signal.reason.startsWith("same order"));
+    const byPerson = matched.some((signal) =>
+      /same email|same phone/.test(signal.reason),
     );
-    if (!identifying) {
+    if (!byOrder && !byPerson) {
+      continue;
+    }
+
+    // An order number that could belong to any of several stores is only
+    // believed when the customer matches too.
+    if (byOrder && !byPerson && orderScope(subject, other, context) === "unknown-store") {
       continue;
     }
 

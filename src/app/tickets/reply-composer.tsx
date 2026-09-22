@@ -2,7 +2,10 @@
 
 import { useActionState, useState } from "react";
 
-import { EMPTY_TICKET_STATE, composeReply } from "./actions";
+import { fillTemplate, type TemplateValues } from "@/lib/replies/templates";
+
+import { composeReply } from "./actions";
+import { EMPTY_TICKET_STATE } from "./state";
 
 /**
  * Writing a reply, and separately deciding to send it.
@@ -14,12 +17,18 @@ import { EMPTY_TICKET_STATE, composeReply } from "./actions";
  *
  * When the channel cannot carry a reply, the words are still worth writing:
  * the box stays, and only sending is off.
+ *
+ * A saved reply is filled in from the ticket as it drops into the box, and
+ * anything the ticket does not know stays visible in brackets for the agent
+ * to fill. Asking Claude for a draft over words a person wrote asks first.
  */
 export function ReplyComposer({
   ticketId,
   initialBody,
   draftIsClaudes,
   blockedReason,
+  savedReplies,
+  templateValues,
 }: {
   ticketId: string;
   initialBody: string;
@@ -27,6 +36,8 @@ export function ReplyComposer({
   draftIsClaudes: boolean;
   /** Why sending is impossible on this ticket, or null when it is possible. */
   blockedReason: string | null;
+  savedReplies: { id: string; title: string; body: string }[];
+  templateValues: TemplateValues;
 }) {
   const [state, formAction, pending] = useActionState(
     composeReply,
@@ -46,6 +57,15 @@ export function ReplyComposer({
 
   const empty = body.trim().length === 0;
 
+  function insertSaved(id: string) {
+    const saved = savedReplies.find((entry) => entry.id === id);
+    if (!saved) {
+      return;
+    }
+    const filled = fillTemplate(saved.body, templateValues);
+    setBody((current) => (current.trim() ? `${current.trimEnd()}\n\n${filled}` : filled));
+  }
+
   return (
     <form action={formAction} className="flex flex-col gap-3">
       <input type="hidden" name="ticketId" value={ticketId} />
@@ -54,15 +74,37 @@ export function ReplyComposer({
         <label htmlFor="reply-body" className="text-sm font-medium">
           Reply
         </label>
-        <button
-          type="submit"
-          name="intent"
-          value="draft"
-          disabled={pending}
-          className="rounded-md border border-black/15 px-3 py-1.5 text-sm hover:bg-black/5 disabled:opacity-50 dark:border-white/20 dark:hover:bg-white/5"
-        >
-          {pending ? "Working…" : "Draft one with Claude"}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {savedReplies.length ? (
+            <select
+              aria-label="Use a saved reply"
+              value=""
+              onChange={(event) => insertSaved(event.target.value)}
+              className="rounded-md border border-black/15 bg-transparent px-2 py-1.5 text-sm dark:border-white/20"
+            >
+              <option value="">Use a saved reply…</option>
+              {savedReplies.map((saved) => (
+                <option key={saved.id} value={saved.id}>
+                  {saved.title}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          {state.confirmReplace ? <input type="hidden" name="confirmReplace" value="1" /> : null}
+          <button
+            type="submit"
+            name="intent"
+            value="draft"
+            disabled={pending}
+            className="rounded-md border border-black/15 px-3 py-1.5 text-sm hover:bg-black/5 disabled:opacity-50 dark:border-white/20 dark:hover:bg-white/5"
+          >
+            {pending
+              ? "Working…"
+              : state.confirmReplace
+                ? "Replace it with Claude's draft"
+                : "Draft one with Claude"}
+          </button>
+        </div>
       </div>
 
       <textarea

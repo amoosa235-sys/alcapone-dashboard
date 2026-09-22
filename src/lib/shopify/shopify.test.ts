@@ -5,7 +5,11 @@ import { test } from "node:test";
 import { appOrigin, normalizeShopDomain } from "./config.ts";
 import { verifyOAuthCallback, verifyWebhook } from "./hmac.ts";
 import { readOAuthState } from "./state.ts";
-import { normalizeShopifyEvent, type ShopifyOrder } from "./tickets.ts";
+import {
+  normalizeShopifyEvent,
+  outcomesFromOrder,
+  type ShopifyOrder,
+} from "./tickets.ts";
 
 /**
  * Run with `npm test`. None of this touches the network: the point is that
@@ -138,8 +142,9 @@ const ORDER: ShopifyOrder = {
 };
 
 test("an order with a note becomes a ticket, and one without does not", () => {
-  const ticket = normalizeShopifyEvent("orders/create", ORDER, ORDER);
-  assert.ok(ticket);
+  const outcome = normalizeShopifyEvent("orders/create", ORDER, ORDER);
+  assert.ok(outcome?.kind === "ticket");
+  const ticket = outcome.ticket;
   assert.equal(ticket.externalId, "orders/create:9001");
   assert.equal(ticket.subject, "Note on order #1001");
   assert.equal(ticket.body, "wrong size, need a swap");
@@ -154,49 +159,71 @@ test("an order with a note becomes a ticket, and one without does not", () => {
   assert.equal(normalizeShopifyEvent("orders/create", quiet, quiet), null);
 });
 
-test("a cancellation keeps the reason and the items", () => {
-  const cancelled = {
+test("a cancellation is order history, not a ticket, and keeps the reason and the items", () => {
+  const cancelled: ShopifyOrder = {
     ...ORDER,
     cancelled_at: "2026-09-21T08:00:00Z",
     cancel_reason: "customer",
   };
-  const ticket = normalizeShopifyEvent("orders/cancelled", cancelled, cancelled);
-  assert.ok(ticket);
-  assert.equal(ticket.subject, "Order #1001 was cancelled");
-  assert.equal(ticket.receivedAt, "2026-09-21T08:00:00Z");
-  assert.match(ticket.body, /Reason given: customer\./);
-  assert.match(ticket.body, /1 x Wool coat \(M \/ Navy\) \[WC-M-NV\]/);
+  const outcome = normalizeShopifyEvent("orders/cancelled", cancelled, cancelled);
+  assert.ok(outcome?.kind === "event");
+  const event = outcome.event;
+  assert.equal(event.kind, "cancelled");
+  assert.equal(event.occurredAt, "2026-09-21T08:00:00Z");
+  assert.equal(event.orderNumber, "#1001");
+  assert.match(event.summary, /Reason given: customer\./);
+  assert.match(event.summary, /1 x Wool coat \(M \/ Navy\) \[WC-M-NV\]/);
 });
 
-test("a refund takes its customer from the order it belongs to", () => {
+test("a refund is order history, and takes its customer from the order it belongs to", () => {
   const refund = {
     id: 555,
     order_id: 9001,
     note: "damaged in transit",
-    created_at: "2026-09-22T09:00:00Z",
-    refund_line_items: [{ quantity: 1, line_item: { name: "Wool coat", sku: "WC-M-NV" } }],
+    created_at: "2026-09-22T10:00:00Z",
+    refund_line_items: [{ quantity: 1, line_item: ORDER.line_items?.[0] }],
   };
+  const outcome = normalizeShopifyEvent("refunds/create", refund, ORDER);
+  assert.ok(outcome?.kind === "event");
+  const event = outcome.event;
+  assert.equal(event.externalId, "refunds/create:555");
+  assert.equal(event.kind, "refunded");
+  assert.equal(event.customerEmail, "bea@example.com");
+  assert.match(event.summary, /damaged in transit/);
+  assert.match(event.summary, /1 x Wool coat/);
 
-  const ticket = normalizeShopifyEvent("refunds/create", refund, ORDER);
-  assert.ok(ticket);
-  assert.equal(ticket.externalId, "refunds/create:555");
-  assert.equal(ticket.subject, "Refund raised on order #1001");
-  assert.equal(ticket.customerEmail, "bea@example.com");
-  assert.equal(ticket.externalThreadId, "order:9001");
-  assert.match(ticket.body, /damaged in transit/);
-  assert.match(ticket.body, /1 x Wool coat/);
-
-  // The order lookup is allowed to fail; the ticket is still worth having.
+  // The order lookup is allowed to fail; the history is still worth having.
   const orphan = normalizeShopifyEvent("refunds/create", refund, null);
-  assert.ok(orphan);
-  assert.equal(orphan.orderNumber, null);
-  assert.equal(orphan.customerEmail, null);
+  assert.ok(orphan?.kind === "event");
+  assert.equal(orphan.event.orderNumber, null);
+  assert.equal(orphan.event.customerEmail, null);
 });
 
-test("events nobody has to act on are not tickets", () => {
+test("events nobody has to act on are dropped", () => {
   assert.equal(normalizeShopifyEvent("orders/updated", ORDER, ORDER), null);
   assert.equal(normalizeShopifyEvent("orders/fulfilled", ORDER, ORDER), null);
   assert.equal(normalizeShopifyEvent("app/uninstalled", {}, null), null);
+});
+
+test("catching up on an order finds the note, the cancellation and every refund, with the webhook ids", () => {
+  const order: ShopifyOrder = {
+    ...ORDER,
+    cancelled_at: "2026-09-21T08:00:00Z",
+    refunds: [
+      { id: 1, order_id: 9001, created_at: "2026-09-21T09:00:00Z" },
+      { id: 2, order_id: 9001, created_at: "2026-09-21T10:00:00Z" },
+    ],
+  };
+  const ids = outcomesFromOrder(order).map((outcome) =>
+    outcome.kind === "ticket" ? outcome.ticket.externalId : outcome.event.externalId,
+  );
+  assert.deepEqual(ids, [
+    "orders/create:9001",
+    "orders/cancelled:9001",
+    "refunds/create:1",
+    "refunds/create:2",
+  ]);
+  assert.deepEqual(outcomesFromOrder({ ...ORDER, note: null }), []);
 });
 
 test("the callback origin prefers the forwarded host over the fallback", () => {
