@@ -1,6 +1,8 @@
 /**
- * Generated from the Supabase schema. Regenerate after every migration with
- * `npm run db:types` rather than editing by hand.
+ * Mirrors the Supabase schema. This is the generator's output with its
+ * long-form helper generics replaced by the simpler equivalents below, so
+ * regenerate with `npm run db:types` after a migration and re-apply that
+ * trim, or the row types drift from the database.
  */
 
 export type Json =
@@ -48,7 +50,22 @@ export type Database = {
           updated_at?: string;
           webhook_secret?: string | null;
         };
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "channel_secrets_channel_id_fkey";
+            columns: ["channel_id"];
+            isOneToOne: true;
+            referencedRelation: "channels";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "channel_secrets_tenant_id_fkey";
+            columns: ["tenant_id"];
+            isOneToOne: false;
+            referencedRelation: "tenants";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       channels: {
         Row: {
@@ -90,7 +107,15 @@ export type Database = {
           type?: Database["public"]["Enums"]["channel_type"];
           updated_at?: string;
         };
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "channels_tenant_id_fkey";
+            columns: ["tenant_id"];
+            isOneToOne: false;
+            referencedRelation: "tenants";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       duplicate_links: {
         Row: {
@@ -132,7 +157,29 @@ export type Database = {
           status?: Database["public"]["Enums"]["duplicate_link_status"];
           tenant_id?: string;
         };
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "duplicate_links_duplicate_ticket_id_fkey";
+            columns: ["duplicate_ticket_id"];
+            isOneToOne: false;
+            referencedRelation: "tickets";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "duplicate_links_primary_ticket_id_fkey";
+            columns: ["primary_ticket_id"];
+            isOneToOne: false;
+            referencedRelation: "tickets";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "duplicate_links_tenant_id_fkey";
+            columns: ["tenant_id"];
+            isOneToOne: false;
+            referencedRelation: "tenants";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       tenant_members: {
         Row: {
@@ -153,7 +200,15 @@ export type Database = {
           tenant_id?: string;
           user_id?: string;
         };
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "tenant_members_tenant_id_fkey";
+            columns: ["tenant_id"];
+            isOneToOne: false;
+            referencedRelation: "tenants";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       tenants: {
         Row: {
@@ -234,7 +289,22 @@ export type Database = {
           tenant_id?: string;
           ticket_id?: string;
         };
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "ticket_classifications_tenant_id_fkey";
+            columns: ["tenant_id"];
+            isOneToOne: false;
+            referencedRelation: "tenants";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "ticket_classifications_ticket_id_fkey";
+            columns: ["ticket_id"];
+            isOneToOne: false;
+            referencedRelation: "tickets";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       tickets: {
         Row: {
@@ -303,14 +373,36 @@ export type Database = {
           tenant_id?: string;
           updated_at?: string;
         };
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "tickets_channel_id_fkey";
+            columns: ["channel_id"];
+            isOneToOne: false;
+            referencedRelation: "channels";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "tickets_merged_into_ticket_id_fkey";
+            columns: ["merged_into_ticket_id"];
+            isOneToOne: false;
+            referencedRelation: "tickets";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "tickets_tenant_id_fkey";
+            columns: ["tenant_id"];
+            isOneToOne: false;
+            referencedRelation: "tenants";
+            referencedColumns: ["id"];
+          },
+        ];
       };
     };
     Views: {
       [_ in never]: never;
     };
     Functions: {
-      [_ in never]: never;
+      claim_initial_tenant: { Args: { tenant_name: string }; Returns: string };
     };
     Enums: {
       channel_status: "pending" | "connected" | "error" | "disabled";

@@ -1,68 +1,85 @@
-import { checkHealth } from "@/lib/health";
+import Link from "next/link";
+
+import { signOut } from "@/app/login/actions";
+import { requireMembership } from "@/lib/auth";
+import { createClient } from "@/lib/supabase/server";
+import { TICKET_STATUSES } from "@/types/database";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Placeholder landing page. It exists to prove the deployed app can reach
- * Supabase; the real dashboard replaces it in step 6.
+ * The signed-in home. It is deliberately thin: the real ticket list, detail
+ * view and reply box are step 6. What it proves today is that a signed-in
+ * user reads their own tenant's rows and nobody else's.
  */
 export default async function Home() {
-  const report = await checkHealth();
+  const { user, membership } = await requireMembership();
+  const counts = await countTicketsByStatus();
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-xl flex-col justify-center gap-8 px-6 py-16">
-      <header className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold tracking-tight">
-          Support dashboard
-        </h1>
-        <p className="text-sm text-black/60 dark:text-white/60">
-          Pipeline check. The dashboard itself is not built yet.
-        </p>
+    <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col gap-10 px-6 py-16">
+      <header className="flex items-start justify-between gap-4">
+        <div className="flex flex-col gap-1">
+          <h1 className="text-2xl font-semibold tracking-tight">
+            {membership.tenantName}
+          </h1>
+          <p className="text-sm text-black/60 dark:text-white/60">
+            Signed in as {user.email} &middot; {membership.role}
+          </p>
+        </div>
+        <form action={signOut}>
+          <button className="text-sm underline">Sign out</button>
+        </form>
       </header>
 
-      <section className="flex flex-col gap-3 rounded-lg border border-black/10 p-5 dark:border-white/15">
-        <Row
-          label="Supabase connection"
-          ok={report.supabase.reachable}
-          detail={report.supabase.error ?? "round trip succeeded"}
-        />
-        {Object.entries(report.env).map(([name, present]) => (
-          <Row
-            key={name}
-            label={name}
-            ok={present}
-            detail={present ? "set" : "missing"}
-          />
+      <section className="grid grid-cols-3 gap-4">
+        {TICKET_STATUSES.map((status) => (
+          <div
+            key={status}
+            className="rounded-lg border border-black/10 p-5 dark:border-white/15"
+          >
+            <div className="text-2xl font-semibold tabular-nums">
+              {counts[status]}
+            </div>
+            <div className="mt-1 text-sm capitalize text-black/60 dark:text-white/60">
+              {status}
+            </div>
+          </div>
         ))}
       </section>
 
-      <p className="text-xs text-black/50 dark:text-white/50">
-        Checked {report.checkedAt}. Machine-readable at{" "}
-        <a className="underline" href="/api/health">
-          /api/health
-        </a>
-        .
+      <p className="text-sm text-black/60 dark:text-white/60">
+        No channels are connected yet, so there are no tickets to show. Shopify
+        comes next, then Outlook.
       </p>
+
+      <Link href="/status" className="text-xs underline">
+        Pipeline check
+      </Link>
     </main>
   );
 }
 
-function Row({
-  label,
-  ok,
-  detail,
-}: {
-  label: string;
-  ok: boolean;
-  detail: string;
-}) {
-  return (
-    <div className="flex items-baseline justify-between gap-4 text-sm">
-      <span className="font-mono">{label}</span>
-      <span className={ok ? "text-green-600" : "text-red-600"}>
-        {ok ? "ok" : "fail"} &middot;{" "}
-        <span className="text-black/50 dark:text-white/50">{detail}</span>
-      </span>
-    </div>
+/**
+ * Counts run under the caller's session, so RLS is what scopes them to the
+ * user's tenant. There is deliberately no tenant_id filter here: if one were
+ * needed, the policies would not be doing their job.
+ */
+async function countTicketsByStatus() {
+  const supabase = await createClient();
+
+  const results = await Promise.all(
+    TICKET_STATUSES.map(async (status) => {
+      const { count } = await supabase
+        .from("tickets")
+        .select("id", { head: true, count: "exact" })
+        .eq("status", status);
+      return [status, count ?? 0] as const;
+    }),
   );
+
+  return Object.fromEntries(results) as Record<
+    (typeof TICKET_STATUSES)[number],
+    number
+  >;
 }

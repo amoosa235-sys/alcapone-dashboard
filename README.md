@@ -10,8 +10,8 @@ classification and reply drafting.
 
 ## Status
 
-Step 1 of 8: the project is scaffolded and the schema is live. Nothing beyond
-the pipeline check is built yet.
+Step 2 of 8: you can sign in, and what you see is scoped to your tenant. No
+channels are connected yet, so there are no tickets.
 
 Production deploys from `main` on every push, at
 https://alcapone-dashboard.vercel.app.
@@ -35,9 +35,43 @@ cp .env.example .env.local   # fill in the four values
 npm run dev
 ```
 
-`/` renders a pipeline check and `/api/health` returns the same report as JSON.
-Both report `ok` only when every environment variable is set and a Supabase
-round trip succeeds.
+`/status` renders a pipeline check and `/api/health` returns the same report as
+JSON. Both report `ok` only when every environment variable is set and a
+Supabase round trip succeeds. Neither needs a session.
+
+## Signing in
+
+Email and password, through Supabase Auth.
+
+| Route | What it is for |
+| --- | --- |
+| `/login` | Sign in or create an account |
+| `/setup` | First run: name the workspace and become its owner |
+| `/pending` | Signed in, but not a member of any workspace yet |
+| `/` | The dashboard, for a signed-in member |
+| `/auth/confirm` | Lands a confirmation or recovery email link |
+
+`src/proxy.ts` refreshes the session cookie on every request and bounces
+signed-out visitors to `/login`. It is a convenience, not the boundary: every
+page that reads tenant data calls `requireMembership()` in `src/lib/auth.ts`,
+which verifies the user against Supabase rather than trusting the cookie.
+
+The first person to sign up calls `claim_initial_tenant`, which creates the
+workspace and makes them its owner. It refuses once any tenant exists, so it
+cannot be replayed to mint more. Anyone who signs up after that lands on
+`/pending` until an owner adds them — v1 has no invite flow, so that is a row
+in `tenant_members`.
+
+### Two Supabase settings this expects
+
+Both live in the Supabase dashboard and neither is in code:
+
+- **Site URL** (Authentication → URL Configuration) must be the deployed
+  origin, or email links point at `localhost`.
+- **Confirm email** (Authentication → Sign In / Providers → Email) is on by
+  default. `/auth/confirm` handles the token_hash form of the link, which
+  means the email template has to be pointed at it; until then, either turn
+  confirmation off or click through Supabase's own redirect.
 
 ## Data model
 
