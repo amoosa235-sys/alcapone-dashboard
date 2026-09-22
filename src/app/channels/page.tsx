@@ -2,8 +2,10 @@ import Link from "next/link";
 
 import { requireMembership } from "@/lib/auth";
 import { isShopifyConfigured, normalizeShopDomain } from "@/lib/shopify/config";
+import { channelSpec } from "@/lib/channels/specs";
 import { connectErrorMessage } from "@/lib/shopify/errors";
 import { createClient } from "@/lib/supabase/server";
+import type { Enums } from "@/types/database";
 
 import { AddAccountMenus } from "./add-account-menus";
 
@@ -85,15 +87,17 @@ export default async function ChannelsPage({
                   <span className="text-sm font-medium">
                     {channel.display_name}
                   </span>
-                  <span className="text-xs capitalize text-black/50 dark:text-white/50">
-                    {channel.type} &middot; {channel.status}
+                  <span className="text-xs text-black/50 dark:text-white/50">
+                    {channelSpec(channel.type)?.name ?? channel.type}
                   </span>
                 </div>
-                {channel.last_error ? (
-                  <span className="text-right text-xs text-red-600">
-                    {channel.last_error}
-                  </span>
-                ) : null}
+                <span className="shrink-0 text-right text-xs text-black/50 dark:text-white/50">
+                  {channel.last_error ? (
+                    <span className="text-red-600">{channel.last_error}</span>
+                  ) : (
+                    describeStatus(channel.status)
+                  )}
+                </span>
               </li>
             ))}
           </ul>
@@ -101,6 +105,23 @@ export default async function ChannelsPage({
       </section>
     </main>
   );
+}
+
+/**
+ * Anything not `connected` is credentials sitting and waiting, so the list
+ * says that rather than showing a bare status word that reads as working.
+ */
+function describeStatus(status: Enums<"channel_status">): string {
+  switch (status) {
+    case "connected":
+      return "Connected";
+    case "pending":
+      return "Saved, not connected yet";
+    case "disabled":
+      return "Disabled";
+    case "error":
+      return "Needs attention";
+  }
 }
 
 /** RLS scopes this to the caller's tenant, so there is no filter here. */

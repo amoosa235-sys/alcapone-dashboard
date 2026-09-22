@@ -77,14 +77,30 @@ Both live in the Supabase dashboard and neither is in code:
 ## Channels
 
 `/channels` has three menus: a Shopify account, an email account and a social
-account. Every account type is listed whether or not it works yet, and one
-that does not says why — Shopify reads "Needs setup" without its keys rather
-than disappearing. They are plain `<details>` elements, so they open before
-the page hydrates and there is no client JavaScript on the route.
+account. Every option under them opens a real form for that account's
+credentials. They are plain `<details>` elements, so the menus open before the
+page hydrates.
 
-Shopify connects today. Microsoft 365 is step 4 and WhatsApp is step 8.
-Instagram and Facebook are listed as not scoped: they were not in the v1
-plan, and nothing is built for them.
+| Menu | Account | Asks for |
+| --- | --- | --- |
+| Shopify | Shopify store | Store address; the rest comes from OAuth |
+| Email | Microsoft 365 (Outlook) | Mailbox, tenant id, client id, client secret |
+| Social | WhatsApp Business | Phone number id, WABA id, access token, verify token |
+| Social | Instagram | Account id, page id, access token |
+| Social | Facebook | Page id, page access token |
+
+Shopify is the only one with an integration behind it. The rest save their
+credentials and sit at `pending`; their forms say so in as many words, and the
+connected list shows them as "Saved, not connected yet". The fields come from
+`CHANNEL_SPECS` in `src/lib/channels/specs.ts`, which also drives what the
+server action validates and which values are treated as secret, so the form
+and the check cannot drift apart.
+
+Anything marked secret goes to `channel_secrets`: `access_token` to its own
+column, the rest into `extra`. That table has RLS on with no policies and its
+grants revoked, so only the service role reads it back. An account's
+identifier is never a secret field, since it becomes `display_name`, which
+everyone in the workspace can see; a test enforces that.
 
 ## Shopify
 

@@ -25,6 +25,7 @@ export type Database = {
           channel_id: string;
           created_at: string;
           expires_at: string | null;
+          extra: Json;
           refresh_token: string | null;
           tenant_id: string;
           updated_at: string;
@@ -35,6 +36,7 @@ export type Database = {
           channel_id: string;
           created_at?: string;
           expires_at?: string | null;
+          extra?: Json;
           refresh_token?: string | null;
           tenant_id: string;
           updated_at?: string;
@@ -45,6 +47,7 @@ export type Database = {
           channel_id?: string;
           created_at?: string;
           expires_at?: string | null;
+          extra?: Json;
           refresh_token?: string | null;
           tenant_id?: string;
           updated_at?: string;
@@ -406,7 +409,12 @@ export type Database = {
     };
     Enums: {
       channel_status: "pending" | "connected" | "error" | "disabled";
-      channel_type: "shopify" | "outlook" | "whatsapp";
+      channel_type:
+        | "shopify"
+        | "outlook"
+        | "whatsapp"
+        | "instagram"
+        | "facebook";
       duplicate_link_status: "suggested" | "confirmed" | "rejected";
       tenant_role: "owner" | "admin" | "agent";
       ticket_category: "enquiry" | "return" | "exchange" | "general_complaint";
@@ -441,4 +449,10 @@ export const TICKET_CATEGORIES = [
   "general_complaint",
 ] as const;
 
-export const CHANNEL_TYPES = ["shopify", "outlook", "whatsapp"] as const;
+export const CHANNEL_TYPES = [
+  "shopify",
+  "outlook",
+  "whatsapp",
+  "instagram",
+  "facebook",
+] as const;
